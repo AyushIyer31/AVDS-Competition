@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Flutter
+petase_app/build/
+petase_app/.dart_tool/
+petase_app/.flutter-plugins
+petase_app/.flutter-plugins-dependencies
+petase_app/.packages
+petase_app/ios/Pods/
+petase_app/macos/Pods/
+petase_app/macos/Flutter/ephemeral/
+petase_app/.metadata
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ESM-2 model cache (too large for git)
+*.pt
+*.pth
