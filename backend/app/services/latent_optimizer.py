@@ -8,24 +8,11 @@ catalytic efficiency and thermal stability.
 import numpy as np
 from typing import Optional
 from . import esm_engine
+from .amino_acid_props import CATALYTIC_RESIDUES, THERMOSTABILITY_HOTSPOTS
 
 # Weights for the combined fitness score
 STABILITY_WEIGHT = 0.5
 ACTIVITY_WEIGHT = 0.5
-
-# Key catalytic residues in IsPETase (0-indexed)
-# These are positions known to affect PET binding and catalysis
-CATALYTIC_RESIDUES = {
-    "S160": 159,   # Catalytic serine (nucleophile)
-    "D206": 205,   # Catalytic aspartate
-    "H237": 236,   # Catalytic histidine
-    "W159": 158,   # Substrate binding
-    "S238": 237,   # Thermostability hotspot
-    "R280": 279,   # Surface loop
-}
-
-# Positions known to improve thermostability when mutated
-THERMOSTABILITY_HOTSPOTS = [121, 158, 159, 186, 237, 238, 279, 280]
 
 
 def _score_candidate(sequence: str) -> tuple[float, float]:
@@ -220,13 +207,56 @@ def optimize(
     for i, cand in enumerate(top_candidates):
         cand["rank"] = i + 1
 
+    # Step 6: Add explainability, literature validation, and classifier predictions
+    # Lazy imports to avoid circular dependency
+    from . import explainability as _explain
+    from . import literature_validation as _litval
+    from . import trained_classifier as _clf
+
+    # Build ESM score lookup from beneficial mutations
+    esm_score_lookup = {m["label"]: m["score"] for m in beneficial}
+
+    # Train classifier if needed (fast, happens once)
+    _clf.train_model()
+
+    for cand in top_candidates:
+        # Explainability
+        explanation = _explain.explain_candidate(
+            cand["mutations"], esm_scores=esm_score_lookup
+        )
+        cand["explanations"] = explanation["mutation_explanations"]
+        cand["overall_strategy"] = explanation["overall_strategy"]
+
+        # Literature validation
+        validation = _litval.validate_mutations(cand["mutations"])
+        cand["literature_validation"] = {
+            "exact_matches": validation["exact_matches"],
+            "position_matches": validation["position_matches"],
+            "novel_predictions": validation["novel_predictions"],
+            "variant_overlaps": validation["variant_overlaps"],
+            "validation_score": validation["validation_score"],
+            "summary": validation["summary"],
+        }
+
+        # Trained classifier prediction
+        classifier_result = _clf.predict_candidate_mutations(cand["mutations"])
+        cand["classifier_prediction"] = {
+            "all_beneficial": classifier_result["all_beneficial"],
+            "beneficial_count": classifier_result["beneficial_count"],
+            "total": classifier_result["total"],
+            "average_confidence": classifier_result["average_confidence"],
+            "per_mutation": classifier_result["predictions"],
+        }
+
     # Latent space summary — use stability/activity scores as 2D coordinates
-    # (avoids 5 extra ESM-2 passes, ~8 seconds saved)
     coords_2d = [[0.0, 0.0]]  # wild-type at origin
     for cand in top_candidates[:5]:
-        x = (cand["predicted_stability_score"] - 0.9) * 20  # spread around origin
+        x = (cand["predicted_stability_score"] - 0.9) * 20
         y = (cand["predicted_activity_score"] - 0.9) * 20
         coords_2d.append([round(x, 4), round(y, 4)])
+
+    # Training metrics for display
+    training_info = _clf.get_training_metrics()
 
     return {
         "original_sequence": sequence,
@@ -237,5 +267,11 @@ def optimize(
             "top_mutations": [m["label"] for m in beneficial[:10]],
             "latent_coordinates": coords_2d,
             "labels": ["wild_type"] + [f"candidate_{i+1}" for i in range(len(coords_2d) - 1)],
+        },
+        "classifier_info": {
+            "model_type": training_info.get("model_type", "GradientBoostingClassifier"),
+            "training_samples": training_info.get("training_samples", 0),
+            "cv_accuracy": training_info.get("cv_accuracy_mean", 0),
+            "feature_importances": training_info.get("feature_importances", {}),
         },
     }

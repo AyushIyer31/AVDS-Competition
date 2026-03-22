@@ -12,6 +12,7 @@ from .models.schemas import (
     PDBSearchResult,
 )
 from .services import pdb_fetcher, esm_engine, latent_optimizer
+from .services import explainability, literature_validation, trained_classifier
 
 app = FastAPI(
     title="PETase ML Optimizer",
@@ -139,6 +140,57 @@ async def optimize_petase(req: OptimizationRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/explain/mutation")
+async def explain_mutation(req: SequenceInput):
+    """Explain a single mutation. Pass mutation as the 'name' field (e.g. S121E)."""
+    mut_str = req.name
+    if len(mut_str) < 3:
+        raise HTTPException(status_code=400, detail="Mutation format: S121E")
+    wt_aa = mut_str[0]
+    mut_aa = mut_str[-1]
+    position = int(mut_str[1:-1]) - 1
+    result = explainability.explain_mutation(wt_aa, mut_aa, position)
+    return result
+
+
+@app.post("/explain/candidate")
+async def explain_candidate_mutations(req: SequenceInput):
+    """Explain all mutations in a candidate. Pass comma-separated mutations as 'name'."""
+    mutations = [m.strip() for m in req.name.split(",") if m.strip()]
+    result = explainability.explain_candidate(mutations)
+    return result
+
+
+@app.get("/literature/known-mutations")
+async def known_mutations():
+    """Return all experimentally validated PETase mutations from literature."""
+    return {
+        "mutations": literature_validation.get_all_known_mutations(),
+        "named_variants": literature_validation.NAMED_VARIANTS,
+    }
+
+
+@app.post("/literature/validate")
+async def validate_against_literature(req: SequenceInput):
+    """Validate predicted mutations against published experiments. Pass comma-separated mutations as 'name'."""
+    mutations = [m.strip() for m in req.name.split(",") if m.strip()]
+    return literature_validation.validate_mutations(mutations)
+
+
+@app.get("/classifier/info")
+async def classifier_info():
+    """Return trained classifier model info and metrics."""
+    metrics = trained_classifier.get_training_metrics()
+    return metrics
+
+
+@app.post("/classifier/predict")
+async def classifier_predict(req: SequenceInput):
+    """Predict mutation effect using trained classifier. Pass comma-separated mutations as 'name'."""
+    mutations = [m.strip() for m in req.name.split(",") if m.strip()]
+    return trained_classifier.predict_candidate_mutations(mutations)
 
 
 @app.get("/default-sequence")
