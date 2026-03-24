@@ -4,6 +4,7 @@ class PDBResult {
   final String organism;
   final double? resolution;
   final String sequence;
+  final String family;
 
   PDBResult({
     required this.pdbId,
@@ -11,6 +12,7 @@ class PDBResult {
     required this.organism,
     this.resolution,
     required this.sequence,
+    this.family = 'Related Hydrolase',
   });
 
   factory PDBResult.fromJson(Map<String, dynamic> json) {
@@ -20,6 +22,7 @@ class PDBResult {
       organism: json['organism'] as String? ?? 'Unknown',
       resolution: (json['resolution'] as num?)?.toDouble(),
       sequence: json['sequence'] as String,
+      family: json['family'] as String? ?? 'Related Hydrolase',
     );
   }
 }

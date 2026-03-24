@@ -122,7 +122,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: Colors.white.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Row(
+                      child: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceAround,
                         children: [
                           _StatColumn(value: '400M+', unit: 'tons/yr', label: 'plastic produced'),
@@ -131,6 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           _StatDivider(),
                           _StatColumn(value: '1000+', unit: 'years', label: 'to decompose'),
                         ],
+                      ),
                       ),
                     ),
                   ],

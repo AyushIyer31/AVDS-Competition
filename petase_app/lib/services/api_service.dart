@@ -6,7 +6,7 @@ class ApiService {
   // Change this to your backend URL
   // For local dev: http://10.0.2.2:8000 (Android emulator)
   // or http://localhost:8000 (iOS simulator)
-  static const String baseUrl = 'http://localhost:8000';
+  static const String baseUrl = 'http://10.0.0.76:8000';
 
   static Future<List<PDBResult>> searchPDB() async {
     final response = await http

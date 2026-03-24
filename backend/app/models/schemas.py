@@ -49,3 +49,4 @@ class PDBSearchResult(BaseModel):
     organism: str
     resolution: float | None
     sequence: str
+    family: str = "Related Hydrolase"

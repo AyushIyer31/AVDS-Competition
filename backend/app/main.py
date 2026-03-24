@@ -70,6 +70,7 @@ async def search_pdb():
                 organism=r.get("organism", "Unknown"),
                 resolution=r.get("resolution"),
                 sequence=r["sequence"],
+                family=r.get("family", "Related Hydrolase"),
             )
             for r in results
         ]

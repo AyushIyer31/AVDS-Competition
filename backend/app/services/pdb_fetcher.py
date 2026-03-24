@@ -10,14 +10,38 @@ RCSB_FASTA_URL = "https://www.rcsb.org/fasta/entry"
 
 KNOWN_PETASE_IDS = [
     "5XJH",  # IsPETase from Ideonella sakaiensis
-    "6EQE",  # Thermostable PETase variant
-    "5XG0",  # IsPETase W159H/S238F
-    "6ANE",  # PETase double mutant
-    "5YNS",  # PETase S121E/D186H/R280A
-    "7CGA",  # FAST-PETase
-    "6IJ6",  # Leaf-branch compost cutinase (LCC)
-    "4EB0",  # Cutinase (related hydrolase)
+    "6EQE",  # High-res IsPETase (0.92A)
+    "5XG0",  # IsPETase variant
+    "6ANE",  # PETase structure
+    "5YNS",  # PETase R280A mutant
+    "7CGA",  # p38gamma (control)
+    "6IJ6",  # ThermoPETase S121E/D186H/R280A
+    "4EB0",  # Leaf-branch compost cutinase
+    "6EQD",  # IsPETase long wavelength
+    "6EQF",  # IsPETase P212121
+    "6EQG",  # IsPETase P21
+    "6EQH",  # IsPETase C2221
+    "6IJ3",  # PETase S121D/D186H
+    "6IJ4",  # PETase S121E/D186H
+    "6IJ5",  # PETase P181A
 ]
+
+# Enzyme family classification
+ENZYME_FAMILIES = {
+    "PETase": ["5XJH", "6EQE", "5XG0", "6ANE", "5YNS", "6IJ6", "6EQD", "6EQF", "6EQG", "6EQH", "6IJ3", "6IJ4", "6IJ5", "6QGC", "8J17", "8J5N"],
+    "Cutinase": ["4EB0", "29CU", "4CG1", "4CG2", "4CG3", "7QJO", "7QJP", "7QJR", "8BRA", "8BRB", "8Z2G", "8Z2H", "8Z2I", "8Z2J", "8Z2K"],
+    "LCC Variant": ["7VVC", "7VVE", "7W1N", "7W44", "7W45", "8CMV", "8JMO", "8JMP", "8QRJ"],
+    "Ancestral PETase": ["8ETX", "8ETY"],
+    "Thermostable Hydrolase": ["7YKO", "7YKP", "7YKQ", "8GZD"],
+    "Novel PET Hydrolase": ["7PZJ", "7Z6B", "8OTU", "9LMT", "9LMU", "9LMV", "9LMW"],
+}
+
+def _classify_enzyme(pdb_id: str) -> str:
+    """Classify enzyme by PDB ID into a family."""
+    for family, ids in ENZYME_FAMILIES.items():
+        if pdb_id in ids:
+            return family
+    return "Related Hydrolase"
 
 # In-memory cache
 _cache: list[dict] = []
@@ -25,7 +49,7 @@ _cache_time: float = 0
 _CACHE_TTL = 600  # 10 minutes
 
 
-def search_petase_structures(max_results: int = 50) -> list[str]:
+def search_petase_structures(max_results: int = 150) -> list[str]:
     query = {
         "query": {
             "type": "group",
@@ -34,6 +58,11 @@ def search_petase_structures(max_results: int = 50) -> list[str]:
                 {"type": "terminal", "service": "full_text", "parameters": {"value": "PETase plastic degrading"}},
                 {"type": "terminal", "service": "full_text", "parameters": {"value": "polyethylene terephthalate hydrolase"}},
                 {"type": "terminal", "service": "full_text", "parameters": {"value": "cutinase PET degradation"}},
+                {"type": "terminal", "service": "full_text", "parameters": {"value": "cutinase thermostable"}},
+                {"type": "terminal", "service": "full_text", "parameters": {"value": "polyester hydrolase"}},
+                {"type": "terminal", "service": "full_text", "parameters": {"value": "esterase plastic biodegradation"}},
+                {"type": "terminal", "service": "full_text", "parameters": {"value": "Thermobifida fusca cutinase"}},
+                {"type": "terminal", "service": "full_text", "parameters": {"value": "leaf branch compost cutinase LCC"}},
             ],
         },
         "return_type": "entry",
@@ -45,7 +74,7 @@ def search_petase_structures(max_results: int = 50) -> list[str]:
         data = resp.json()
         return [hit["identifier"] for hit in data.get("result_set", [])]
     except Exception:
-        return KNOWN_PETASE_IDS
+        return list(KNOWN_PETASE_IDS)
 
 
 def fetch_entry_metadata(pdb_id: str) -> dict:
@@ -62,9 +91,10 @@ def fetch_entry_metadata(pdb_id: str) -> dict:
                 else "Unknown"
             ),
             "resolution": data.get("rcsb_entry_info", {}).get("resolution_combined", [None])[0],
+            "family": _classify_enzyme(pdb_id),
         }
     except Exception:
-        return {"pdb_id": pdb_id, "title": "Unknown", "organism": "Unknown", "resolution": None}
+        return {"pdb_id": pdb_id, "title": "Unknown", "organism": "Unknown", "resolution": None, "family": _classify_enzyme(pdb_id)}
 
 
 def fetch_sequence(pdb_id: str) -> str:
@@ -98,7 +128,7 @@ def fetch_all_petase_data() -> list[dict]:
     all_ids = list(dict.fromkeys(KNOWN_PETASE_IDS + pdb_ids))
 
     results = []
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         futures = {executor.submit(_fetch_single_entry, pid): pid for pid in all_ids}
         for future in as_completed(futures):
             result = future.result()

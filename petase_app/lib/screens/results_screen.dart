@@ -100,15 +100,22 @@ class ResultsScreen extends StatelessWidget {
               color: Colors.white.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _miniStat('+$improvePct%', 'predicted gain'),
-                Container(width: 1, height: 24, color: Colors.white24),
-                _miniStat('$kgPerYear kg', 'PET / year'),
-                Container(width: 1, height: 24, color: Colors.white24),
-                _miniStat('${best?.mutations.length ?? 0}', 'mutations'),
-              ],
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _miniStat('+$improvePct%', 'predicted gain'),
+                  const SizedBox(width: 16),
+                  Container(width: 1, height: 24, color: Colors.white24),
+                  const SizedBox(width: 16),
+                  _miniStat('$kgPerYear kg', 'PET / year'),
+                  const SizedBox(width: 16),
+                  Container(width: 1, height: 24, color: Colors.white24),
+                  const SizedBox(width: 16),
+                  _miniStat('${best?.mutations.length ?? 0}', 'mutations'),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -217,22 +224,28 @@ class ResultsScreen extends StatelessWidget {
                         letterSpacing: 0.8)),
               ),
               const SizedBox(width: 10),
-              const Text('Gradient Boosting Classifier',
-                  style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary)),
+              const Expanded(
+                child: Text('Gradient Boosting Classifier',
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+              ),
             ],
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              _modelStat('${(accuracy * 100).toStringAsFixed(1)}%', 'CV Accuracy'),
-              const SizedBox(width: 24),
-              _modelStat('$samples', 'Training Samples'),
-              const SizedBox(width: 24),
-              _modelStat('17', 'Features'),
-            ],
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              children: [
+                _modelStat('${(accuracy * 100).toStringAsFixed(1)}%', 'CV Accuracy'),
+                const SizedBox(width: 24),
+                _modelStat('$samples', 'Training Samples'),
+                const SizedBox(width: 24),
+                _modelStat('17', 'Features'),
+              ],
+            ),
           ),
           if (topFeatures.isNotEmpty) ...[
             const SizedBox(height: 14),
@@ -554,11 +567,12 @@ class ResultsScreen extends StatelessWidget {
                               color: AppColors.textPrimary),
                         ),
                         const SizedBox(height: 4),
-                        Row(
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 4,
                           children: [
                             _miniScore('Stability',
                                 candidate.predictedStabilityScore, Colors.blue),
-                            const SizedBox(width: 12),
                             _miniScore('Speed',
                                 candidate.predictedActivityScore, AppColors.warning),
                           ],
@@ -589,12 +603,13 @@ class ResultsScreen extends StatelessWidget {
               // Badges row
               if (hasValidation || classifierOk) ...[
                 const SizedBox(height: 10),
-                Row(
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
                     if (hasValidation)
                       _badge('Literature Validated', AppColors.success,
                           Icons.verified),
-                    if (hasValidation && classifierOk) const SizedBox(width: 6),
                     if (classifierOk)
                       _badge(
                           'ML Confirmed ${(candidate.classifierPrediction!.averageConfidence * 100).toStringAsFixed(0)}%',
@@ -829,14 +844,15 @@ class ResultsScreen extends StatelessWidget {
                       ? AppColors.accent
                       : AppColors.textSecondary),
               const SizedBox(width: 8),
-              const Text('Trained Classifier Verdict',
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary)),
-              const Spacer(),
+              const Expanded(
+                child: Text('Trained Classifier',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+              ),
               Text(
-                  '${(cp.averageConfidence * 100).toStringAsFixed(1)}% confidence',
+                  '${(cp.averageConfidence * 100).toStringAsFixed(1)}%',
                   style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -1094,17 +1110,18 @@ class ResultsScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
               children: [
                 const Icon(Icons.swap_horiz, size: 18, color: AppColors.primary),
-                const SizedBox(width: 8),
                 Text(exp.mutation,
                     style: const TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
                         fontSize: 15,
                         color: AppColors.textPrimary)),
-                const SizedBox(width: 8),
                 if (exp.nearActiveSite)
                   _tagChip('Active Site', AppColors.warning),
                 if (exp.thermostabilityHotspot)
@@ -1179,9 +1196,11 @@ class ResultsScreen extends StatelessWidget {
                   fontSize: 15,
                   color: AppColors.textPrimary)),
           const SizedBox(width: 10),
-          Text(_describeMutation(m),
-              style: const TextStyle(
-                  fontSize: 13, color: AppColors.textSecondary)),
+          Expanded(
+            child: Text(_describeMutation(m),
+                style: const TextStyle(
+                    fontSize: 13, color: AppColors.textSecondary)),
+          ),
         ],
       ),
     );

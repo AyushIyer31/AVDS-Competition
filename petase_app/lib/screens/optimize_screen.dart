@@ -196,22 +196,25 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
                               fontWeight: FontWeight.w500,
                               color: AppColors.textSecondary)),
                       const Spacer(),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: _targetTemp >= 55 && _targetTemp <= 65
-                              ? AppColors.success.withValues(alpha: 0.1)
-                              : AppColors.surface,
-                          borderRadius: BorderRadius.circular(6),
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _targetTemp >= 55 && _targetTemp <= 65
+                                ? AppColors.success.withValues(alpha: 0.1)
+                                : AppColors.surface,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(_tempLabel(),
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: _targetTemp >= 55 && _targetTemp <= 65
+                                      ? AppColors.success
+                                      : AppColors.textTertiary,
+                                  fontWeight: FontWeight.w500)),
                         ),
-                        child: Text(_tempLabel(),
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: _targetTemp >= 55 && _targetTemp <= 65
-                                    ? AppColors.success
-                                    : AppColors.textTertiary,
-                                fontWeight: FontWeight.w500)),
                       ),
                     ],
                   ),
