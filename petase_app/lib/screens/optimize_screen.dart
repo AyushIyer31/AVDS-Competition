@@ -3,6 +3,78 @@ import '../theme.dart';
 import '../services/api_service.dart';
 import 'results_screen.dart';
 
+class _EnzymePreset {
+  final String name;
+  final String organism;
+  final String pdbId;
+  final String description;
+  final int residues;
+  final String sequence;
+
+  const _EnzymePreset({
+    required this.name,
+    required this.organism,
+    required this.pdbId,
+    required this.description,
+    required this.residues,
+    required this.sequence,
+  });
+}
+
+const _presets = [
+  _EnzymePreset(
+    name: 'IsPETase',
+    organism: 'I. sakaiensis',
+    pdbId: '5XJH',
+    description: 'Wild-type, denatures at 40\u00b0C',
+    residues: 312,
+    sequence:
+        'MNFPRASRLMQAAVLGGLMAVSAAATAQTNPYARGPNPTAASLEASAGPFTVRSFTVSRPSGYGAG'
+        'TVYYPTNAGGTVGAIAIVPGYTARQSSIKWWGPRLASHGFVVITIDTNSTLDQPSSRSSQQMAALR'
+        'QVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNPSLKAAAPQAPWDSSTNFSSVTVPTL'
+        'IFACENDSIAPVNSSALPIYDSMSRNAKQFLEINGGSHSCANSGNSNQALIGKKGVAWMKRFMDNDT'
+        'RYSTFACENPNSTRVSDFRTANCSLEDPAANKARKEAELAAATAEQ',
+  ),
+  _EnzymePreset(
+    name: 'ThermoPETase',
+    organism: 'Engineered',
+    pdbId: '6IJ6',
+    description: '3 mutations, active at 72\u00b0C',
+    residues: 312,
+    sequence:
+        'MNFPRASRLMQAAVLGGLMAVSAAATAQTNPYARGPNPTAASLEASAGPFTVRSFTVSRPSGYGAG'
+        'TVYYPTNAGGTVGAIAIVPGYTARQSSIKWWGPRLASHGFVVITIDTNSTLDQPESRSSQQMAALR'
+        'QVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNPSLKAAAPQAPWHSSTNFSSVTVPTL'
+        'IFACENDSIAPVNSSALPIYDSMSRNAKQFLEINGGSHSCANSGNSNQALIGKKGVAWMKRFMDNDT'
+        'RYSTFACENPNSTAVSDFRTANCSLEDPAANKARKEAELAAATAEQ',
+  ),
+  _EnzymePreset(
+    name: 'FAST-PETase',
+    organism: 'Engineered',
+    pdbId: 'Lu et al. 2022',
+    description: '5 mutations, full PET in 1 week',
+    residues: 312,
+    sequence:
+        'MNFPRASRLMQAAVLGGLMAVSAAATAQTNPYARGPNPTAASLEASAGPFTVRSFTVSRPSGYGAG'
+        'TVYYPTNAGGTVGAIAIVPGYTARQSSIKWWGPRLASHGFVVITIDTNSTLDQPESRSSQQMAALR'
+        'QVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNPSLKAAAPQAPWHSSTNFSSVTVPTL'
+        'IFACENDSIAPVNSSALPIYDSMSRNAKQFLEIKGGSHFCANSGNSNQALIGKKGVAWMKRFMDNDT'
+        'RYSTFACENPNSTAVSDFRTANCSLEDPAANKARKEAELAAATAEQ',
+  ),
+  _EnzymePreset(
+    name: 'LCC',
+    organism: 'Metagenome',
+    pdbId: '4EB0',
+    description: 'Leaf-branch compost cutinase',
+    residues: 261,
+    sequence:
+        'SNPYQRGPNPTRSALTADGPFSVATYTVSRLSVSGFGGGVIYYPTGTSLTFGGIAMSPGYTADASSL'
+        'AWLGRRLASHGFVVLVINTNSRFDYPDSRASQLSAALNYLRTSSPSAVRARLDANRLAVAGHSMGGG'
+        'GTLRIAEQNPSLKAAVPLTPWHTDKTFNTSVPVLIVGAEADTVAPVSQHAIPFYQNLPSTTPKVYV'
+        'ELDNASHFAPNSNNAAISVYTISWMKLWVDNDTRYRQFLCNVNDPALSDFRTNNRHCQ',
+  ),
+];
+
 class OptimizeScreen extends StatefulWidget {
   final String? initialSequence;
 
@@ -20,6 +92,7 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
   String? _error;
   String _statusMessage = '';
   int _step = 0;
+  String? _selectedPreset;
 
   @override
   void initState() {
@@ -27,6 +100,7 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
     if (widget.initialSequence != null) {
       _sequenceController.text = widget.initialSequence!;
     }
+    _sequenceController.addListener(() => setState(() {}));
   }
 
   @override
@@ -35,18 +109,9 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
     super.dispose();
   }
 
-  Future<void> _loadDefault() async {
-    try {
-      final seq = await ApiService.getDefaultSequence();
-      _sequenceController.text = seq;
-    } catch (e) {
-      _sequenceController.text =
-          'MNFPRASRLMQAAVLGGLMAVSAAATAQTNPYARGPNPTAASLEASAGPFTVRSFTVSRPSGYGAG'
-          'TVYYPTNAGGTVGAIAIVPGYTARQSSIKWWGPRLASHGFVVITIDTNSTLDQPSSRSSQQMAALR'
-          'QVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNPSLKAAAPQAPWDSSTNFSSVTVPTL'
-          'IFACENDSIAPVNSSALPIYDSMSRNAKQFLEINGGSHSCANSGNSNQALIGKKGVAWMKRFMDNDT'
-          'RYSTFACENPNSTRVSDFRTANCSLEDPAANKARKEAELAAATAEQ';
-    }
+  void _selectPreset(_EnzymePreset preset) {
+    _sequenceController.text = preset.sequence;
+    setState(() => _selectedPreset = preset.name);
   }
 
   Future<void> _runOptimization() async {
@@ -105,15 +170,18 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
   }
 
   String _tempLabel() {
-    if (_targetTemp <= 40) return 'Ambient — natural enzymes work here';
-    if (_targetTemp <= 55) return 'Warm — enzymes start to struggle';
-    if (_targetTemp <= 65) return 'PET glass transition — ideal for recycling';
-    if (_targetTemp <= 75) return 'High heat — aggressive recycling';
-    return 'Extreme — very challenging for enzymes';
+    if (_targetTemp <= 40) return 'Ambient \u2014 natural enzymes work here';
+    if (_targetTemp <= 55) return 'Warm \u2014 enzymes start to struggle';
+    if (_targetTemp <= 65) return 'PET glass transition \u2014 ideal for recycling';
+    if (_targetTemp <= 75) return 'High heat \u2014 aggressive recycling';
+    return 'Extreme \u2014 very challenging for enzymes';
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasSequence = _sequenceController.text.trim().isNotEmpty;
+    final seqLength = _sequenceController.text.trim().replaceAll(RegExp(r'\s+'), '').length;
+
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(title: const Text('Design Better Enzyme')),
@@ -122,44 +190,135 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Section 1: Sequence input
-            const Text('ENZYME SEQUENCE',
+            // Section 1: Preset enzyme chips (only when no sequence was pre-loaded)
+            if (widget.initialSequence == null) ...[
+            const Text('SELECT AN ENZYME',
                 style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textTertiary,
                     letterSpacing: 1.2)),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
+            const Text(
+              'Pick a known enzyme or paste your own sequence below',
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _presets.map((preset) {
+                final isSelected = _selectedPreset == preset.name;
+                return GestureDetector(
+                  onTap: _loading ? null : () => _selectPreset(preset),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isSelected ? AppColors.primary : Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSelected ? AppColors.primary : AppColors.border,
+                        width: isSelected ? 1.5 : 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(preset.name,
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: isSelected ? Colors.white : AppColors.textPrimary)),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? Colors.white.withValues(alpha: 0.2)
+                                    : AppColors.surface,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text('${preset.residues} aa',
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w500,
+                                      color: isSelected ? Colors.white70 : AppColors.textTertiary)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(preset.description,
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: isSelected ? Colors.white70 : AppColors.textTertiary)),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+
+            const SizedBox(height: 16),
+            ], // end if (widget.initialSequence == null)
+
+            // Sequence text field
             Row(
               children: [
-                const Expanded(
-                  child: Text(
-                    'Each letter represents one amino acid building block',
-                    style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                const Text('SEQUENCE',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textTertiary,
+                        letterSpacing: 1.2)),
+                if (hasSequence) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.success.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text('$seqLength residues',
+                        style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.success)),
                   ),
-                ),
-                TextButton(
-                  onPressed: _loading ? null : _loadDefault,
-                  child: const Text('Use IsPETase',
-                      style: TextStyle(fontSize: 13)),
-                ),
+                ],
+                const Spacer(),
+                if (hasSequence)
+                  GestureDetector(
+                    onTap: _loading
+                        ? null
+                        : () {
+                            _sequenceController.clear();
+                            setState(() => _selectedPreset = null);
+                          },
+                    child: const Text('Clear',
+                        style: TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w500)),
+                  ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             TextField(
               controller: _sequenceController,
-              maxLines: 5,
+              maxLines: 4,
               style: const TextStyle(
                   fontFamily: 'monospace',
-                  fontSize: 13,
+                  fontSize: 12,
                   color: AppColors.textPrimary),
               decoration: const InputDecoration(
-                hintText: 'MNFPRASRLMQAAVLGGLMAVSAAATAQ...',
-                hintStyle: TextStyle(color: AppColors.textTertiary),
+                hintText: 'Select a preset above or paste a sequence...',
+                hintStyle: TextStyle(color: AppColors.textTertiary, fontSize: 12),
               ),
             ),
 
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
 
             // Section 2: Temperature
             const Text('TARGET TEMPERATURE',
@@ -190,7 +349,7 @@ class _OptimizeScreenState extends State<OptimizeScreen> {
                               fontSize: 32,
                               fontWeight: FontWeight.w800,
                               color: AppColors.textPrimary)),
-                      const Text(' °C',
+                      const Text(' \u00b0C',
                           style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w500,

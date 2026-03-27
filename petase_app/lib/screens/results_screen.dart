@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../theme.dart';
 import '../models/api_models.dart';
+import 'structure_viewer_screen.dart';
 
 class ResultsScreen extends StatelessWidget {
   final OptimizationResult result;
@@ -414,112 +415,128 @@ class ResultsScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
-          SizedBox(
-            height: 30.0 * result.candidates.length + 20,
-            child: BarChart(
-              BarChartData(
-                alignment: BarChartAlignment.spaceAround,
-                maxY: 1.0,
-                minY: (wtScore - 0.02).clamp(0.0, 1.0),
-                barTouchData: BarTouchData(
-                  enabled: true,
-                  touchTooltipData: BarTouchTooltipData(
-                    tooltipBorderRadius: BorderRadius.circular(8),
-                    getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                      final c = result.candidates[group.x.toInt()];
-                      return BarTooltipItem(
-                        '#${c.rank}  ${(c.combinedScore * 100).toStringAsFixed(2)}%',
-                        const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700),
-                      );
-                    },
-                  ),
-                ),
-                titlesData: FlTitlesData(
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (value, meta) {
-                        final idx = value.toInt();
-                        if (idx < 0 || idx >= result.candidates.length) {
-                          return const SizedBox.shrink();
-                        }
-                        return Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Text('#${result.candidates[idx].rank}',
-                              style: const TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textTertiary)),
+          Builder(builder: (context) {
+            // Calculate smart Y-axis range to make differences visible
+            final scores = result.candidates.map((c) => c.combinedScore).toList();
+            final allValues = [wtScore, ...scores];
+            final minVal = allValues.reduce((a, b) => a < b ? a : b);
+            final maxVal = allValues.reduce((a, b) => a > b ? a : b);
+            final range = maxVal - minVal;
+            // Add padding: 20% below min, 20% above max, minimum 0.02 spread
+            final padding = (range < 0.01) ? 0.02 : range * 0.3;
+            final chartMin = (minVal - padding).clamp(0.0, 1.0);
+            final chartMax = (maxVal + padding).clamp(0.0, 1.0);
+
+            return SizedBox(
+              height: 30.0 * result.candidates.length + 40,
+              child: BarChart(
+                BarChartData(
+                  alignment: BarChartAlignment.spaceAround,
+                  maxY: chartMax,
+                  minY: chartMin,
+                  barTouchData: BarTouchData(
+                    enabled: true,
+                    touchTooltipData: BarTouchTooltipData(
+                      tooltipBorderRadius: BorderRadius.circular(8),
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        final c = result.candidates[group.x.toInt()];
+                        final improvement = ((c.combinedScore - wtScore) / wtScore * 100);
+                        return BarTooltipItem(
+                          '#${c.rank}  ${(c.combinedScore * 100).toStringAsFixed(2)}%\n${improvement >= 0 ? '+' : ''}${improvement.toStringAsFixed(2)}% vs wild-type',
+                          const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600),
                         );
                       },
-                      reservedSize: 24,
                     ),
                   ),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 44,
-                      getTitlesWidget: (value, meta) {
-                        return Text('${(value * 100).toStringAsFixed(1)}%',
-                            style: const TextStyle(
-                                fontSize: 9, color: AppColors.textTertiary));
-                      },
-                    ),
-                  ),
-                  topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                ),
-                gridData: FlGridData(
-                  show: true,
-                  drawVerticalLine: false,
-                  getDrawingHorizontalLine: (_) =>
-                      const FlLine(color: AppColors.border, strokeWidth: 0.5),
-                ),
-                borderData: FlBorderData(show: false),
-                extraLinesData: ExtraLinesData(
-                  horizontalLines: [
-                    HorizontalLine(
-                      y: wtScore,
-                      color: AppColors.error,
-                      strokeWidth: 2,
-                      dashArray: [6, 4],
-                      label: HorizontalLineLabel(
-                        show: true,
-                        alignment: Alignment.topRight,
-                        style: const TextStyle(
-                            fontSize: 9,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.error),
-                        labelResolver: (_) => 'Wild-type',
+                  titlesData: FlTitlesData(
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        getTitlesWidget: (value, meta) {
+                          final idx = value.toInt();
+                          if (idx < 0 || idx >= result.candidates.length) {
+                            return const SizedBox.shrink();
+                          }
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text('#${result.candidates[idx].rank}',
+                                style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textTertiary)),
+                          );
+                        },
+                        reservedSize: 24,
                       ),
                     ),
-                  ],
-                ),
-                barGroups: List.generate(result.candidates.length, (i) {
-                  final c = result.candidates[i];
-                  return BarChartGroupData(
-                    x: i,
-                    barRods: [
-                      BarChartRodData(
-                        toY: c.combinedScore,
-                        width: 18,
-                        color: i == 0
-                            ? AppColors.primary
-                            : AppColors.primary.withValues(alpha: 0.7),
-                        borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(4)),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 48,
+                        getTitlesWidget: (value, meta) {
+                          return Text('${(value * 100).toStringAsFixed(2)}%',
+                              style: const TextStyle(
+                                  fontSize: 9, color: AppColors.textTertiary));
+                        },
+                      ),
+                    ),
+                    topTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false)),
+                    rightTitles: const AxisTitles(
+                        sideTitles: SideTitles(showTitles: false)),
+                  ),
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    getDrawingHorizontalLine: (_) =>
+                        const FlLine(color: AppColors.border, strokeWidth: 0.5),
+                  ),
+                  borderData: FlBorderData(show: false),
+                  extraLinesData: ExtraLinesData(
+                    horizontalLines: [
+                      HorizontalLine(
+                        y: wtScore,
+                        color: AppColors.error,
+                        strokeWidth: 2,
+                        dashArray: [6, 4],
+                        label: HorizontalLineLabel(
+                          show: true,
+                          alignment: Alignment.topRight,
+                          style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.error),
+                          labelResolver: (_) => 'Wild-type',
+                        ),
                       ),
                     ],
-                  );
-                }),
+                  ),
+                  barGroups: List.generate(result.candidates.length, (i) {
+                    final c = result.candidates[i];
+                    // Color bars: green if above wild-type, orange if below
+                    final isImproved = c.combinedScore > wtScore;
+                    return BarChartGroupData(
+                      x: i,
+                      barRods: [
+                        BarChartRodData(
+                          toY: c.combinedScore,
+                          width: 20,
+                          color: isImproved
+                              ? (i == 0 ? AppColors.primary : AppColors.primary.withValues(alpha: 0.7))
+                              : Colors.orange.withValues(alpha: 0.7),
+                          borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(4)),
+                        ),
+                      ],
+                    );
+                  }),
+                ),
               ),
-            ),
-          ),
+            );
+          }),
         ],
       ),
     );
@@ -664,12 +681,27 @@ class ResultsScreen extends StatelessWidget {
                 ],
               ),
               // Badges row
-              if (hasValidation || classifierOk) ...[
+              if (hasValidation || classifierOk || candidate.rank <= 3) ...[
                 const SizedBox(height: 10),
                 Wrap(
                   spacing: 6,
                   runSpacing: 6,
                   children: [
+                    if (candidate.rank <= 3)
+                      GestureDetector(
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => StructureViewerScreen(
+                              originalSequence: result.originalSequence,
+                              candidateSequence: candidate.sequence,
+                              mutations: candidate.mutations,
+                              rank: candidate.rank,
+                            ),
+                          ),
+                        ),
+                        child: _badge('View 3D', AppColors.primary, Icons.view_in_ar),
+                      ),
                     if (hasValidation)
                       _badge('Literature Validated', AppColors.success,
                           Icons.verified),

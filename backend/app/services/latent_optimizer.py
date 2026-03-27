@@ -207,8 +207,10 @@ def optimize(
     candidates.sort(key=lambda x: x["mutation_score_sum"], reverse=True)
     top_to_score = candidates[:num_candidates + 5]  # score a few extra for safety
 
-    # Get temperature-adjusted weights
+    # Score the wild-type sequence as baseline
+    wt_stability, wt_activity = _score_candidate(sequence)
     stability_w, activity_w = _get_temp_weights(target_temp)
+    wt_combined = stability_w * wt_stability + activity_w * wt_activity
     hotspot_per_mut = _get_hotspot_bonus(target_temp)
 
     scored = []
@@ -291,7 +293,9 @@ def optimize(
     return {
         "original_sequence": sequence,
         "candidates": top_candidates,
+        "wild_type_score": round(wt_combined, 6),
         "latent_space_summary": {
+            "wild_type_score": round(wt_combined, 6),
             "beneficial_mutations_found": len(beneficial),
             "candidates_explored": len(candidates),
             "top_mutations": [m["label"] for m in beneficial[:10]],

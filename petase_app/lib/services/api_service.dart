@@ -80,6 +80,21 @@ class ApiService {
     throw Exception('Optimization failed: ${response.statusCode}');
   }
 
+  static Future<String?> lookupPdbId(String sequence) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/lookup-pdb?sequence=$sequence'))
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final pdbId = data['pdb_id'];
+        return (pdbId != null && pdbId.toString().isNotEmpty) ? pdbId.toString() : null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static Future<bool> checkHealth() async {
     try {
       final response = await http

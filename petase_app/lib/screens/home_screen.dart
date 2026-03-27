@@ -62,7 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('PETase Optimizer',
+                      Text('PET Lab',
                           style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w700,
@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   gradient: const LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFF0D6B4B), Color(0xFF094D36)],
+                    colors: [Color(0xFF1A7FC4), Color(0xFF0E9B8E)],
                   ),
                   borderRadius: BorderRadius.circular(18),
                 ),

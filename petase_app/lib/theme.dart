@@ -1,19 +1,19 @@
 import 'package:flutter/material.dart';
 
-// Custom biotech color palette — intentional, not default Material
+// Aqua/blue palette matched to the PETase Lab logo
 class AppColors {
-  static const primary = Color(0xFF0D6B4B);      // Deep forest green
-  static const primaryLight = Color(0xFF14A76C);  // Vibrant green
-  static const accent = Color(0xFF1B98E0);        // Clean blue
-  static const surface = Color(0xFFF7F9FC);       // Off-white
+  static const primary = Color(0xFF1A7FC4);      // Logo blue
+  static const primaryLight = Color(0xFF3A9FE4);  // Lighter blue
+  static const accent = Color(0xFF0FB5A2);        // Logo aqua/teal
+  static const surface = Color(0xFFF5F9FC);       // Cool off-white
   static const card = Color(0xFFFFFFFF);
   static const textPrimary = Color(0xFF1A1D21);   // Near-black
   static const textSecondary = Color(0xFF5F6B7A); // Cool grey
   static const textTertiary = Color(0xFF9AA5B4);  // Light grey
-  static const border = Color(0xFFE8ECF1);        // Subtle border
+  static const border = Color(0xFFDFE6EE);        // Subtle border
   static const warning = Color(0xFFE8910C);
   static const error = Color(0xFFD64045);
-  static const success = Color(0xFF14A76C);
+  static const success = Color(0xFF0FB5A2);       // Aqua (matches logo)
 }
 
 class AppTheme {

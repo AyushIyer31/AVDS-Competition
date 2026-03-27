@@ -1,21 +1,21 @@
 import 'package:flutter/material.dart';
 import 'theme.dart';
-import 'screens/home_screen.dart';
+import 'screens/splash_screen.dart';
 
 void main() {
-  runApp(const PETaseApp());
+  runApp(const PETLabApp());
 }
 
-class PETaseApp extends StatelessWidget {
-  const PETaseApp({super.key});
+class PETLabApp extends StatelessWidget {
+  const PETLabApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'PETase ML Optimizer',
+      title: 'PET Lab',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
-      home: const HomeScreen(),
+      home: const SplashScreen(),
     );
   }
 }

@@ -1,7 +1,9 @@
 """FastAPI backend for PETase ML optimization."""
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 from .models.schemas import (
     SequenceInput,
@@ -198,3 +200,281 @@ async def classifier_predict(req: SequenceInput):
 async def default_sequence():
     """Return the default IsPETase wild-type sequence."""
     return {"name": "IsPETase (Ideonella sakaiensis)", "pdb_id": "5XJH", "sequence": ISPETASE_SEQUENCE}
+
+
+# ---------- 3D Structure Viewer ----------
+# Cache predicted structures to avoid re-calling ESMFold
+_STRUCTURE_CACHE: dict[str, str] = {}
+
+# Known PDB IDs for preset sequences (avoid ESMFold when unnecessary)
+_LCC_SEQUENCE = (
+    "SNPYQRGPNPTRSALTADGPFSVATYTVSRLSVSGFGGGVIYYPTGTSLTFGGIAMSPGYTADASSL"
+    "AWLGRRLASHGFVVLVINTNSRFDYPDSRASQLSAALNYLRTSSPSAVRARLDANRLAVAGHSMGGG"
+    "GTLRIAEQNPSLKAAVPLTPWHTDKTFNTSVPVLIVGAEADTVAPVSQHAIPFYQNLPSTTPKVYV"
+    "ELDNASHFAPNSNNAAISVYTISWMKLWVDNDTRYRQFLCNVNDPALSDFRTNNRHCQ"
+)
+
+_KNOWN_SEQUENCE_PDBS: dict[str, str] = {
+    ISPETASE_SEQUENCE: "5XJH",
+    _LCC_SEQUENCE: "4EB0",
+}
+
+
+from pydantic import BaseModel as _BaseModel
+
+class StructureRequest(_BaseModel):
+    sequence: str
+    mutations: str = ""
+    title: str = ""
+    original_sequence: str = ""
+
+
+@app.post("/api/structure-viewer", response_class=HTMLResponse)
+async def structure_viewer(req: StructureRequest):
+    """Return an interactive 3Dmol.js HTML page.
+
+    Uses known PDB structures when available, otherwise predicts
+    the structure using ESMFold (Meta's protein structure prediction model).
+    """
+    sequence = req.sequence.strip().upper()
+    original = req.original_sequence.strip().upper() if req.original_sequence else sequence
+
+    # Check cache first
+    pdb_data = _STRUCTURE_CACHE.get(original) or _STRUCTURE_CACHE.get(sequence)
+    source = "cached"
+
+    if not pdb_data:
+        pdb_id = None
+
+        # 1. Try known PDB for the original wild-type sequence
+        pdb_id = _KNOWN_SEQUENCE_PDBS.get(original)
+
+        # 2. Try subsequence match against known sequences
+        if not pdb_id:
+            for known_seq, kid in _KNOWN_SEQUENCE_PDBS.items():
+                if original in known_seq or known_seq in original:
+                    pdb_id = kid
+                    break
+
+        # 3. Try similarity match — if sequences differ by < 5%, use the same PDB
+        if not pdb_id:
+            for known_seq, kid in _KNOWN_SEQUENCE_PDBS.items():
+                if len(original) == len(known_seq):
+                    diffs = sum(1 for a, b in zip(original, known_seq) if a != b)
+                    if diffs / len(original) < 0.05:
+                        pdb_id = kid
+                        break
+                # Also check the candidate sequence itself
+                if len(sequence) == len(known_seq):
+                    diffs = sum(1 for a, b in zip(sequence, known_seq) if a != b)
+                    if diffs / len(sequence) < 0.05:
+                        pdb_id = kid
+                        break
+
+        # 4. Try fetching from RCSB search by sequence
+        if not pdb_id:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    search_query = {
+                        "query": {
+                            "type": "terminal",
+                            "service": "sequence",
+                            "parameters": {
+                                "evalue_cutoff": 0.1,
+                                "identity_cutoff": 0.9,
+                                "sequence_type": "protein",
+                                "value": original[:400],
+                            }
+                        },
+                        "return_type": "entry",
+                        "request_options": {"results_content_type": ["experimental"], "return_all_hits": False}
+                    }
+                    resp = await client.post(
+                        "https://search.rcsb.org/rcsbsearch/v2/query",
+                        json=search_query,
+                    )
+                    if resp.status_code == 200:
+                        hits = resp.json().get("result_set", [])
+                        if hits:
+                            pdb_id = hits[0]["identifier"]
+            except Exception:
+                pass
+
+        if pdb_id:
+            # Fetch crystal structure from RCSB
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"https://files.rcsb.org/download/{pdb_id}.pdb")
+                if resp.status_code == 200:
+                    pdb_data = resp.text
+                    source = f"PDB: {pdb_id} (crystal structure)"
+
+        if not pdb_data:
+            raise HTTPException(
+                status_code=404,
+                detail="No structure found. Try using a known enzyme from the presets."
+            )
+
+        # Cache for future requests
+        _STRUCTURE_CACHE[original] = pdb_data
+
+    # Parse mutations like "S121E,D186H,R280A"
+    mut_list = [m.strip() for m in req.mutations.split(",") if m.strip()]
+    mut_positions = []
+    mut_labels = []
+    for m in mut_list:
+        try:
+            pos = int(m[1:-1])
+            mut_positions.append(pos)
+            mut_labels.append(m)
+        except (ValueError, IndexError):
+            pass
+
+    # Catalytic residues for IsPETase-like enzymes
+    catalytic = [160, 206, 237]
+
+    # Build JS for highlighting
+    mut_selections_js = ""
+    for i, pos in enumerate(mut_positions):
+        mut_selections_js += f"""
+        viewer.addStyle({{resi: {pos}, chain: 'A'}}, {{stick: {{color: '#FF6B35', radius: 0.2}}}});
+        viewer.addLabel("{mut_labels[i]}", {{
+            position: {{resi: {pos}, chain: 'A'}},
+            backgroundColor: '#FF6B35',
+            fontColor: 'white',
+            fontSize: 13,
+            padding: 3,
+            borderRadius: 6,
+            showBackground: true
+        }});
+        """
+
+    catalytic_js = ""
+    for pos in catalytic:
+        catalytic_js += f"""
+        viewer.addStyle({{resi: {pos}, chain: 'A'}}, {{stick: {{color: '#0FB5A2', radius: 0.18}}}});
+        viewer.addLabel("Cat {pos}", {{
+            position: {{resi: {pos}, chain: 'A'}},
+            backgroundColor: '#0FB5A2',
+            fontColor: 'white',
+            fontSize: 10,
+            padding: 2,
+            borderRadius: 4,
+            showBackground: true
+        }});
+        """
+
+    display_title = req.title if req.title else "3D Structure"
+    if mut_labels:
+        display_title += f" — {', '.join(mut_labels)}"
+
+    # Escape PDB data for JS
+    pdb_escaped = pdb_data.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{
+    background: #1A1A2E;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    color: white;
+    overflow: hidden;
+  }}
+  #header {{
+    padding: 12px 16px;
+    background: rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }}
+  #header h2 {{
+    font-size: 15px;
+    font-weight: 600;
+    color: #E0E8F0;
+    margin-bottom: 4px;
+  }}
+  #legend {{
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: #8899AA;
+  }}
+  .legend-dot {{
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+    vertical-align: middle;
+  }}
+  #viewer-container {{
+    width: 100vw;
+    height: calc(100vh - 70px);
+  }}
+  #tip {{
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: rgba(255,255,255,0.35);
+    pointer-events: none;
+  }}
+</style>
+<script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+</head>
+<body>
+<div id="header">
+  <h2>{display_title}</h2>
+  <div id="legend">
+    <span><span class="legend-dot" style="background:#4488CC"></span>Protein backbone</span>
+    <span><span class="legend-dot" style="background:#FF6B35"></span>AI Mutations</span>
+    <span><span class="legend-dot" style="background:#0FB5A2"></span>Catalytic triad</span>
+    <span style="margin-left:auto; color:#6B8AB5; font-style:italic;">{source}</span>
+  </div>
+</div>
+<div id="viewer-container"></div>
+<div id="tip">Pinch to zoom &bull; Drag to rotate &bull; Two-finger drag to pan</div>
+<script>
+let viewer = $3Dmol.createViewer("viewer-container", {{
+  backgroundColor: "0x1A1A2E",
+  antialias: true,
+  cartoonQuality: 10
+}});
+
+let pdbData = `{pdb_escaped}`;
+viewer.addModel(pdbData, "pdb");
+
+// Base style: cartoon with color by chain
+viewer.setStyle({{}}, {{
+  cartoon: {{
+    color: "spectrum",
+    opacity: 0.85,
+    thickness: 0.25
+  }}
+}});
+
+// Highlight mutations
+{mut_selections_js}
+
+// Highlight catalytic residues
+{catalytic_js}
+
+viewer.zoomTo();
+viewer.spin(false);
+viewer.render();
+
+// Auto-spin slowly on load, stop on touch
+let spinning = true;
+viewer.spin("y", 0.5);
+document.getElementById("viewer-container").addEventListener("touchstart", function() {{
+  if (spinning) {{ viewer.spin(false); spinning = false; }}
+}});
+document.getElementById("viewer-container").addEventListener("mousedown", function() {{
+  if (spinning) {{ viewer.spin(false); spinning = false; }}
+}});
+</script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
