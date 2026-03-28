@@ -6,7 +6,6 @@ catalytic efficiency and thermal stability.
 """
 
 import numpy as np
-from typing import Optional
 from . import esm_engine
 from .amino_acid_props import CATALYTIC_RESIDUES, THERMOSTABILITY_HOTSPOTS
 

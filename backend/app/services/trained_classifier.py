@@ -11,12 +11,11 @@ alongside ESM-2's zero-shot predictions.
 """
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import StandardScaler
 import pickle
 import os
-from typing import Optional
 
 from . import amino_acid_props as aap
 

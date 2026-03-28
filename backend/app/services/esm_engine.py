@@ -2,7 +2,6 @@
 
 import torch
 import numpy as np
-from typing import Optional
 
 # ESM-2 model (loaded lazily)
 _model = None
