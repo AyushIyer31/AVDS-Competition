@@ -506,11 +506,11 @@ TRAINING_DATA = [
 
 
 def _extract_features(wt_aa: str, position: int, mut_aa: str) -> list[float]:
-    """Extract feature vector for a single mutation (20 features)."""
+    """Extract feature vector for a single mutation."""
     from .amino_acid_props import CATALYTIC_RESIDUES, THERMOSTABILITY_HOTSPOTS
 
-    # Base AA property features (10)
-    features = aap.feature_vector(wt_aa, mut_aa)
+    # Extended AA property features (27) — includes volume, burial, BLOSUM62, category transitions
+    features = aap.feature_vector_v2(wt_aa, mut_aa)
 
     # Structural context
     near_active = 0.0
@@ -525,12 +525,15 @@ def _extract_features(wt_aa: str, position: int, mut_aa: str) -> list[float]:
 
     features.append(position / 312.0)
 
-    features.append(1.0 if mut_aa == "P" else 0.0)
-    features.append(1.0 if mut_aa == "G" else 0.0)
-    features.append(abs(aap.CHARGE.get(mut_aa, 0) - aap.CHARGE.get(wt_aa, 0)))
+    # Distance to nearest catalytic residue (continuous, more informative than binary)
+    cat_positions = list(CATALYTIC_RESIDUES.values())
+    min_dist = min(abs((position - 1) - c) for c in cat_positions)
+    features.append(min_dist / 312.0)
 
-    aromatics = {"F", "W", "Y", "H"}
-    features.append(1.0 if wt_aa in aromatics and mut_aa not in aromatics else 0.0)
+    # Secondary structure context: position in sequence thirds
+    features.append(1.0 if position <= 104 else 0.0)  # N-terminal third
+    features.append(1.0 if 104 < position <= 208 else 0.0)  # Middle third
+    features.append(1.0 if position > 208 else 0.0)  # C-terminal third
 
     return features
 
@@ -570,14 +573,16 @@ def train_model(force_retrain: bool = False) -> dict:
     _scaler = StandardScaler()
     X_scaled = _scaler.fit_transform(X)
 
-    # Train with tuned hyperparameters
+    # Train with tuned hyperparameters (regularized to reduce overfitting)
     _classifier = GradientBoostingClassifier(
-        n_estimators=100,
-        max_depth=4,
-        min_samples_split=3,
-        min_samples_leaf=2,
-        learning_rate=0.1,
-        random_state=42,
+        n_estimators=300,
+        max_depth=3,
+        min_samples_split=15,
+        min_samples_leaf=8,
+        learning_rate=0.065,
+        subsample=0.85,
+        max_features=0.7,
+        random_state=44,
     )
     _classifier.fit(X_scaled, y)
 
@@ -590,9 +595,13 @@ def train_model(force_retrain: bool = False) -> dict:
     feature_names = [
         "hydro_delta", "charge_delta", "size_delta", "flex_delta",
         "helix_delta", "sheet_delta", "wt_hydro", "mut_hydro",
-        "wt_size", "mut_size", "near_active", "is_hotspot",
-        "norm_position", "is_proline", "is_glycine", "abs_charge_change",
-        "aromatic_loss",
+        "wt_size", "mut_size", "volume_delta", "burial_delta",
+        "blosum62", "wt_conservation", "aromatic_loss", "aromatic_gain",
+        "charge_loss", "charge_gain", "hydro_to_polar",
+        "to_proline", "from_proline", "to_glycine", "from_glycine",
+        "hydro_size_interact", "charge_flex_interact",
+        "near_active", "is_hotspot", "norm_position", "catalytic_dist",
+        "n_terminal", "middle", "c_terminal",
     ]
     importances = dict(zip(feature_names, [round(x, 4) for x in _classifier.feature_importances_]))
 
