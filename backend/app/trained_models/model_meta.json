@@ -1,0 +1,8 @@
+{
+  "n_features": 64,
+  "n_handcrafted": 44,
+  "n_esm2": 20,
+  "esm2_model": "esm2_t12_35M_UR50D",
+  "cv_accuracy": 0.9263902559055118,
+  "best_seed": 5
+}
