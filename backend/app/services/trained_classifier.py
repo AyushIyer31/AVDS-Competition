@@ -6,7 +6,7 @@ Trained on FireProtDB experimental data (1,277 mutations) with 44 features:
 - 3 AlphaFold 2 pLDDT confidence features
 - 7 interaction terms
 
-Achieves 90.4% cross-validated accuracy on held-out folds.
+Achieves 91.5% cross-validated accuracy on held-out folds.
 """
 
 import numpy as np
@@ -101,8 +101,8 @@ def train_model(force_retrain: bool = False) -> dict:
             "training_samples": 1277,
             "positive_samples": 196,
             "negative_samples": 1081,
-            "cv_accuracy_mean": 0.9037,
-            "cv_accuracy_std": 0.0217,
+            "cv_accuracy_mean": 0.9154,
+            "cv_accuracy_std": 0.0129,
             "n_features": 44,
             "data_source": "FireProtDB + AlphaFold 2 pLDDT",
             "loaded_from_cache": True,
