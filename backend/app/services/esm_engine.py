@@ -1,7 +1,8 @@
 """ESM-2 protein language model for embeddings and stability prediction."""
 
-import torch
 import numpy as np
+
+torch = None  # lazy loaded
 
 # ESM-2 model (loaded lazily)
 _model = None
@@ -13,10 +14,12 @@ AMINO_ACIDS = list("ACDEFGHIKLMNPQRSTVWY")
 
 def _load_model():
     """Load ESM-2 model (650M parameter version)."""
-    global _model, _alphabet, _batch_converter
+    global _model, _alphabet, _batch_converter, torch
     if _model is not None:
         return
 
+    import torch as _torch
+    torch = _torch
     import esm
 
     _model, _alphabet = esm.pretrained.esm2_t33_650M_UR50D()

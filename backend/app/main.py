@@ -13,7 +13,7 @@ from .models.schemas import (
     MutationCandidate,
     PDBSearchResult,
 )
-from .services import pdb_fetcher, esm_engine, latent_optimizer
+from .services import pdb_fetcher, latent_optimizer
 from .services import explainability, literature_validation, trained_classifier
 
 app = FastAPI(
@@ -99,6 +99,7 @@ async def compute_embedding(req: SequenceInput):
         raise HTTPException(status_code=400, detail="Sequence must be under 1000 residues")
 
     try:
+        from .services import esm_engine
         embedding = esm_engine.get_sequence_embedding(req.sequence)
         return EmbeddingResponse(
             sequence=req.sequence,
@@ -116,13 +117,14 @@ async def scan_mutations(req: SequenceInput):
         raise HTTPException(status_code=400, detail="Sequence must be at least 10 residues")
 
     try:
+        from .services import esm_engine
         mutations = esm_engine.scan_beneficial_mutations(req.sequence, top_k=30)
         return {"sequence_length": len(req.sequence), "beneficial_mutations": mutations}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/optimize", response_model=OptimizationResponse)
+@app.post("/optimize")
 async def optimize_petase(req: OptimizationRequest):
     """Run full latent space optimization to generate improved PETase candidates."""
     sequence = req.sequence or ISPETASE_SEQUENCE
@@ -140,6 +142,7 @@ async def optimize_petase(req: OptimizationRequest):
             original_sequence=result["original_sequence"],
             candidates=[MutationCandidate(**c) for c in result["candidates"]],
             latent_space_summary=result["latent_space_summary"],
+            classifier_info=result.get("classifier_info", {}),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
