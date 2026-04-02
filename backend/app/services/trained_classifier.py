@@ -1,13 +1,13 @@
 """Trained XGBoost classifier for mutation thermostability prediction.
 
-Trained on FireProtDB experimental data (1,277 mutations) with 64 features:
+Trained on FireProtDB + ThermoMutDB experimental data (5,386 mutations) with 64 features:
 - 27 biochemical properties (amino acid property deltas, BLOSUM62, etc.)
 - 7 structural features (RSA, secondary structure, b-factor, conservation)
 - 3 AlphaFold 2 pLDDT confidence features
 - 7 interaction terms
 - 20 ESM-2 protein language model features
 
-Achieves 92.6% cross-validated accuracy on held-out folds.
+Achieves 94.4% cross-validated accuracy on held-out folds.
 """
 
 import numpy as np
@@ -153,13 +153,13 @@ def train_model(force_retrain: bool = False) -> dict:
             _scaler = pickle.load(f)
         _training_metrics = {
             "model_type": "XGBClassifier + ESM-2",
-            "training_samples": 1277,
-            "positive_samples": 196,
-            "negative_samples": 1081,
-            "cv_accuracy_mean": 0.9264,
-            "cv_accuracy_std": 0.0141,
+            "training_samples": 5386,
+            "positive_samples": 556,
+            "negative_samples": 4830,
+            "cv_accuracy_mean": 0.9436,
+            "cv_accuracy_std": 0.0100,
             "n_features": 64,
-            "data_source": "FireProtDB + AlphaFold 2 + ESM-2",
+            "data_source": "FireProtDB + ThermoMutDB + AlphaFold 2 + ESM-2",
             "loaded_from_cache": True,
         }
         return _training_metrics

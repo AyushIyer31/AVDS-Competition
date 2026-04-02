@@ -3,6 +3,15 @@
   "n_handcrafted": 44,
   "n_esm2": 20,
   "esm2_model": "esm2_t12_35M_UR50D",
-  "cv_accuracy": 0.9263902559055118,
-  "best_seed": 5
+  "cv_accuracy": 0.9435558069121532,
+  "best_seed": 2,
+  "best_config": {
+    "n_estimators": 500,
+    "max_depth": 9,
+    "learning_rate": 0.05
+  },
+  "training_samples": 5386,
+  "stabilizing": 556,
+  "destabilizing": 4830,
+  "data_sources": "FireProtDB + ThermoMutDB"
 }
