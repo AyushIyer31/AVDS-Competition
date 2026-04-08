@@ -1,17 +1,17 @@
-"""Publication-ready GradientBoostingRegressor for mutation thermostability prediction.
+"""Publication-ready ensemble regressor for mutation thermostability prediction.
 
-Predicts DDG (kcal/mol) directly — negative = stabilizing, positive = destabilizing.
+Predicts DDG (kcal/mol) using an ensemble of 3 models:
+  - GradientBoostingRegressor (sklearn)
+  - XGBRegressor (xgboost)
+  - RandomForestRegressor (sklearn)
+Final prediction = average of all 3.
+
 Trained on real experimental data only (no synthetic mutations):
 - FireProtDB: ~3,400 curated mutations with DDG values
 - ProDDG (S2648): ~2,300 mutations with DDG values
 - ThermoMutDB: ~4,000 mutations with DDG values
 
-42 features, same as classifier version.
-
-Independent test on S669 (669 mutations):
-  MAE: 1.18 kcal/mol, Pearson r: 0.31, Accuracy (threshold): 73.4%
-Cross-validated (10-fold):
-  MAE: 1.09 kcal/mol, Pearson r: 0.66, Accuracy (threshold): 76.4%
+42 features.
 """
 
 import numpy as np
@@ -25,7 +25,7 @@ REGRESSOR_PATH = os.path.join(MODEL_DIR, "mutation_regressor.pkl")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 META_PATH = os.path.join(MODEL_DIR, "model_meta.json")
 
-_regressor = None
+_ensemble = None  # dict with 'models' list and 'weights'
 _scaler = None
 _training_metrics = None
 
@@ -244,12 +244,12 @@ def _extract_features(wt_aa: str, position: int, mut_aa: str,
 # ═══════════════════════════════════════════════════════════
 
 def train_model(force_retrain: bool = False) -> dict:
-    """Load pre-trained regressor from disk."""
-    global _regressor, _scaler, _training_metrics
+    """Load pre-trained ensemble from disk."""
+    global _ensemble, _scaler, _training_metrics
 
     if not force_retrain and os.path.exists(REGRESSOR_PATH) and os.path.exists(SCALER_PATH):
         with open(REGRESSOR_PATH, "rb") as f:
-            _regressor = pickle.load(f)
+            _ensemble = pickle.load(f)
         with open(SCALER_PATH, "rb") as f:
             _scaler = pickle.load(f)
 
@@ -259,7 +259,7 @@ def train_model(force_retrain: bool = False) -> dict:
             _training_metrics["loaded_from_cache"] = True
         else:
             _training_metrics = {
-                "model_type": "GradientBoostingRegressor (publication-ready)",
+                "model_type": "Ensemble (GradientBoosting + XGBoost + RandomForest)",
                 "loaded_from_cache": True,
             }
         return _training_metrics
@@ -270,24 +270,33 @@ def train_model(force_retrain: bool = False) -> dict:
     )
 
 
+def _ensemble_predict(features_scaled):
+    """Get ensemble prediction (average of all models)."""
+    predictions = []
+    weights = _ensemble.get('weights', [1.0/3, 1.0/3, 1.0/3])
+    for (name, model), w in zip(_ensemble['models'], weights):
+        pred = model.predict(features_scaled)
+        predictions.append(pred * w)
+    return np.sum(predictions, axis=0) / sum(weights)
+
+
 def predict_mutation(wt_aa: str, position: int, mut_aa: str,
                      sequence: str = None, **kwargs) -> dict:
-    """Predict DDG for a mutation and derive stability classification."""
-    global _regressor, _scaler
+    """Predict DDG for a mutation using ensemble and derive stability classification."""
+    global _ensemble, _scaler
 
-    if _regressor is None:
+    if _ensemble is None:
         train_model()
 
     features = np.array([_extract_features(wt_aa, position, mut_aa, sequence=sequence)])
     features_scaled = _scaler.transform(features)
 
-    predicted_ddg = float(_regressor.predict(features_scaled)[0])
+    predicted_ddg = float(_ensemble_predict(features_scaled)[0])
 
     # DDG < 0 means stabilizing (beneficial)
     is_beneficial = predicted_ddg < 0
 
     # Convert DDG to a probability-like confidence score
-    # Use sigmoid-like mapping: more negative DDG = higher confidence of stabilizing
     confidence = 1.0 / (1.0 + np.exp(predicted_ddg))  # sigmoid(-ddg)
 
     return {
@@ -300,7 +309,7 @@ def predict_mutation(wt_aa: str, position: int, mut_aa: str,
 
 def predict_candidate_mutations(mutations: list[str], sequence: str = None) -> dict:
     """Predict all mutations in a candidate and return aggregate assessment."""
-    if _regressor is None:
+    if _ensemble is None:
         train_model()
 
     predictions = []

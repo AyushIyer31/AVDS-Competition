@@ -1,6 +1,11 @@
-"""Publication-Ready Protein Stability Prediction Model (Regression).
+"""Publication-Ready Protein Stability Prediction Model (Ensemble Regression).
 
-Predicts ΔΔG values directly using GradientBoostingRegressor.
+Predicts ΔΔG values using an ensemble of 3 regressors:
+  - GradientBoostingRegressor (sklearn)
+  - XGBRegressor (xgboost)
+  - RandomForestRegressor (sklearn)
+
+Final prediction = average of all 3 models.
 Trained ONLY on real experimental data — no synthetic mutations.
 
 Data sources:
@@ -10,12 +15,6 @@ Data sources:
 
 Independent test set (never seen during training):
   - S669 (669 mutations) — held out entirely
-
-Evaluation:
-  - 10-fold cross-validation on training set
-  - Leave-one-protein-out cross-validation (generalization)
-  - Independent test on S669
-  - Metrics: MAE, RMSE, Pearson r, Spearman r, + classification metrics via thresholding
 """
 
 import os
@@ -26,7 +25,7 @@ import pandas as pd
 import pickle
 from collections import defaultdict
 
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.model_selection import (
     KFold, cross_val_score, cross_val_predict, GroupKFold
 )
@@ -35,6 +34,7 @@ from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score, precision_score, recall_score,
     mean_absolute_error, mean_squared_error, r2_score, confusion_matrix
 )
+from xgboost import XGBRegressor
 from scipy.stats import pearsonr, spearmanr
 import warnings
 warnings.filterwarnings('ignore')
@@ -525,17 +525,18 @@ def main():
     X_test_scaled = scaler.transform(X_test)
     print(f"  Scaled {X_train.shape[1]} features")
 
-    # ── Step 5: Train regressor ──
-    print("\nSTEP 5: Training GradientBoosting regressor (predicting DDG)")
+    # ── Step 5: Train ensemble of 3 regressors ──
+    print("\nSTEP 5: Training ensemble (GradientBoosting + XGBoost + RandomForest)")
     print("-" * 40)
 
     n_pos = np.sum(y_train == 1)
     n_neg = np.sum(y_train == 0)
     print(f"  Stabilizing (DDG<0): {n_pos}, Destabilizing (DDG>=0): {n_neg}")
     print(f"  DDG range: [{y_train_ddg.min():.2f}, {y_train_ddg.max():.2f}] kcal/mol")
-    print(f"  DDG mean: {y_train_ddg.mean():.2f}, median: {np.median(y_train_ddg):.2f}")
 
-    reg = GradientBoostingRegressor(
+    # Model 1: GradientBoosting (sklearn)
+    print("\n  Training Model 1: GradientBoostingRegressor...")
+    gb_reg = GradientBoostingRegressor(
         n_estimators=500,
         max_depth=5,
         learning_rate=0.05,
@@ -543,41 +544,78 @@ def main():
         min_samples_leaf=10,
         min_samples_split=20,
         max_features='sqrt',
-        loss='huber',           # robust to outliers in DDG
+        loss='huber',
         alpha=0.9,
         random_state=42,
-        verbose=0,
     )
-    reg.fit(X_train_scaled, y_train_ddg)
-    print("  Regressor trained.")
+    gb_reg.fit(X_train_scaled, y_train_ddg)
+    print("    Done.")
 
-    # ── Step 6: Cross-validation on training set ──
+    # Model 2: XGBoost
+    print("  Training Model 2: XGBRegressor...")
+    xgb_reg = XGBRegressor(
+        n_estimators=500,
+        max_depth=5,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=10,
+        reg_alpha=0.1,
+        reg_lambda=1.0,
+        random_state=42,
+        verbosity=0,
+    )
+    xgb_reg.fit(X_train_scaled, y_train_ddg)
+    print("    Done.")
+
+    # Model 3: RandomForest
+    print("  Training Model 3: RandomForestRegressor...")
+    rf_reg = RandomForestRegressor(
+        n_estimators=500,
+        max_depth=15,
+        min_samples_leaf=5,
+        max_features='sqrt',
+        random_state=42,
+        n_jobs=-1,
+    )
+    rf_reg.fit(X_train_scaled, y_train_ddg)
+    print("    Done.")
+
+    models = [('GradientBoosting', gb_reg), ('XGBoost', xgb_reg), ('RandomForest', rf_reg)]
+
+    # ── Step 6: Cross-validation — individual + ensemble ──
     print("\nSTEP 6: Cross-validation (10-fold)")
     print("-" * 40)
     kf = KFold(n_splits=10, shuffle=True, random_state=42)
 
-    cv_mae = cross_val_score(reg, X_train_scaled, y_train_ddg, cv=kf,
-                             scoring='neg_mean_absolute_error')
-    cv_r2 = cross_val_score(reg, X_train_scaled, y_train_ddg, cv=kf,
-                            scoring='r2')
-    # Get CV predictions for Pearson/classification metrics
-    cv_preds = cross_val_predict(reg, X_train_scaled, y_train_ddg, cv=kf)
-    cv_pearson, _ = pearsonr(cv_preds, y_train_ddg)
-    cv_spearman, _ = spearmanr(cv_preds, y_train_ddg)
-    # Classification from regression: predict stabilizing if predicted DDG < 0
-    cv_binary_pred = (cv_preds < 0).astype(int)
+    # Get CV predictions from each model
+    cv_preds_all = {}
+    for name, model in models:
+        cv_pred = cross_val_predict(model, X_train_scaled, y_train_ddg, cv=kf)
+        cv_preds_all[name] = cv_pred
+        pr, _ = pearsonr(cv_pred, y_train_ddg)
+        sr, _ = spearmanr(cv_pred, y_train_ddg)
+        cv_mae_val = mean_absolute_error(y_train_ddg, cv_pred)
+        cv_binary = (cv_pred < 0).astype(int)
+        cv_acc_val = accuracy_score(y_train, cv_binary)
+        print(f"  {name:20s}  MAE={cv_mae_val:.4f}  Pearson={pr:.4f}  Spearman={sr:.4f}  Acc={cv_acc_val:.4f}")
+
+    # Ensemble: average of all 3
+    cv_preds_ensemble = np.mean([cv_preds_all[n] for n, _ in models], axis=0)
+    cv_pearson, _ = pearsonr(cv_preds_ensemble, y_train_ddg)
+    cv_spearman, _ = spearmanr(cv_preds_ensemble, y_train_ddg)
+    cv_mae_ens = mean_absolute_error(y_train_ddg, cv_preds_ensemble)
+    cv_r2_ens = r2_score(y_train_ddg, cv_preds_ensemble)
+    cv_binary_pred = (cv_preds_ensemble < 0).astype(int)
     cv_acc = accuracy_score(y_train, cv_binary_pred)
     cv_f1_val = f1_score(y_train, cv_binary_pred)
 
-    print(f"  CV MAE:      {-cv_mae.mean():.4f} +/- {cv_mae.std():.4f} kcal/mol")
-    print(f"  CV R²:       {cv_r2.mean():.4f} +/- {cv_r2.std():.4f}")
-    print(f"  CV Pearson:  {cv_pearson:.4f}")
-    print(f"  CV Spearman: {cv_spearman:.4f}")
-    print(f"  CV Accuracy (from threshold): {cv_acc:.4f}")
-    print(f"  CV F1 (from threshold):       {cv_f1_val:.4f}")
+    print(f"\n  {'ENSEMBLE (avg)':20s}  MAE={cv_mae_ens:.4f}  Pearson={cv_pearson:.4f}  Spearman={cv_spearman:.4f}  Acc={cv_acc:.4f}")
+    print(f"  CV R²: {cv_r2_ens:.4f}")
+    print(f"  CV F1 (from threshold): {cv_f1_val:.4f}")
 
-    # ── Step 7: Leave-one-protein-out CV (generalization) ──
-    print("\nSTEP 7: Leave-one-protein-out cross-validation")
+    # ── Step 7: Leave-one-protein-out CV ──
+    print("\nSTEP 7: Leave-one-protein-out cross-validation (ensemble)")
     print("-" * 40)
     protein_arr = np.array(train_proteins)
     unique_proteins = list(set(train_proteins))
@@ -591,15 +629,17 @@ def main():
         gkf = GroupKFold(n_splits=min(len(big_proteins), 20))
         mask = np.array([p in big_proteins for p in train_proteins])
         if np.sum(mask) > 100:
-            lopo_mae = cross_val_score(reg, X_train_scaled[mask], y_train_ddg[mask],
-                                       cv=gkf, groups=groups[mask],
-                                       scoring='neg_mean_absolute_error')
-            lopo_preds = cross_val_predict(reg, X_train_scaled[mask], y_train_ddg[mask],
-                                           cv=gkf, groups=groups[mask])
-            lopo_pearson, _ = pearsonr(lopo_preds, y_train_ddg[mask])
-            lopo_binary = (lopo_preds < 0).astype(int)
+            lopo_preds_all = []
+            for name, model in models:
+                lp = cross_val_predict(model, X_train_scaled[mask], y_train_ddg[mask],
+                                       cv=gkf, groups=groups[mask])
+                lopo_preds_all.append(lp)
+            lopo_ensemble = np.mean(lopo_preds_all, axis=0)
+            lopo_pearson, _ = pearsonr(lopo_ensemble, y_train_ddg[mask])
+            lopo_mae_val = mean_absolute_error(y_train_ddg[mask], lopo_ensemble)
+            lopo_binary = (lopo_ensemble < 0).astype(int)
             lopo_acc = accuracy_score(y_train[mask], lopo_binary)
-            print(f"  LOPO MAE:      {-lopo_mae.mean():.4f} +/- {lopo_mae.std():.4f}")
+            print(f"  LOPO MAE:      {lopo_mae_val:.4f}")
             print(f"  LOPO Pearson:  {lopo_pearson:.4f}")
             print(f"  LOPO Accuracy: {lopo_acc:.4f}")
         else:
@@ -610,32 +650,43 @@ def main():
     # ── Step 8: Independent test on S669 ──
     print("\nSTEP 8: Independent test on S669")
     print("-" * 40)
-    y_pred_ddg = reg.predict(X_test_scaled)
 
-    # Regression metrics
+    # Individual model predictions
+    test_preds_all = {}
+    for name, model in models:
+        tp = model.predict(X_test_scaled)
+        test_preds_all[name] = tp
+        pr, _ = pearsonr(tp, y_test_ddg)
+        mae_val = mean_absolute_error(y_test_ddg, tp)
+        tb = (tp < 0).astype(int)
+        acc_val = accuracy_score(y_test, tb)
+        print(f"  {name:20s}  MAE={mae_val:.4f}  Pearson={pr:.4f}  Acc={acc_val:.4f}")
+
+    # Ensemble prediction
+    y_pred_ddg = np.mean([test_preds_all[n] for n, _ in models], axis=0)
+
     mae = mean_absolute_error(y_test_ddg, y_pred_ddg)
     rmse = np.sqrt(mean_squared_error(y_test_ddg, y_pred_ddg))
     r2 = r2_score(y_test_ddg, y_pred_ddg)
     pearson_r_val, pearson_p = pearsonr(y_pred_ddg, y_test_ddg)
     spearman_r_val, spearman_p = spearmanr(y_pred_ddg, y_test_ddg)
 
-    print(f"  MAE:         {mae:.4f} kcal/mol")
-    print(f"  RMSE:        {rmse:.4f} kcal/mol")
-    print(f"  R²:          {r2:.4f}")
-    print(f"  Pearson r:   {pearson_r_val:.4f} (p={pearson_p:.2e})")
-    print(f"  Spearman r:  {spearman_r_val:.4f} (p={spearman_p:.2e})")
-
-    # Classification via thresholding (DDG < 0 = stabilizing)
     y_pred_binary = (y_pred_ddg < 0).astype(int)
     acc = accuracy_score(y_test, y_pred_binary)
     f1 = f1_score(y_test, y_pred_binary)
     prec = precision_score(y_test, y_pred_binary, zero_division=0)
     rec = recall_score(y_test, y_pred_binary, zero_division=0)
     try:
-        auc = roc_auc_score(y_test, -y_pred_ddg)  # more negative = more stabilizing
+        auc = roc_auc_score(y_test, -y_pred_ddg)
     except ValueError:
         auc = 0.0
 
+    print(f"\n  ENSEMBLE results:")
+    print(f"  MAE:         {mae:.4f} kcal/mol")
+    print(f"  RMSE:        {rmse:.4f} kcal/mol")
+    print(f"  R²:          {r2:.4f}")
+    print(f"  Pearson r:   {pearson_r_val:.4f} (p={pearson_p:.2e})")
+    print(f"  Spearman r:  {spearman_r_val:.4f} (p={spearman_p:.2e})")
     print(f"\n  Classification (threshold DDG < 0):")
     print(f"  Accuracy:    {acc:.4f}")
     print(f"  F1 Score:    {f1:.4f}")
@@ -645,8 +696,8 @@ def main():
     cm = confusion_matrix(y_test, y_pred_binary)
     print(f"  TN={cm[0][0]}, FP={cm[0][1]}, FN={cm[1][0]}, TP={cm[1][1]}")
 
-    # ── Step 9: Feature importance ──
-    print("\nSTEP 9: Top 15 feature importances")
+    # ── Step 9: Feature importance (averaged across models) ──
+    print("\nSTEP 9: Top 15 feature importances (averaged)")
     print("-" * 40)
     feature_names = [
         'dH', 'dV', 'dC', 'dF', 'dHelix', 'dSheet',
@@ -661,28 +712,33 @@ def main():
         'aromatic_change', 'small→large', 'large→small',
         'cons_wt', 'cons_mut', 'cons_delta',
     ]
-    importances = reg.feature_importances_
-    idx_sorted = np.argsort(importances)[::-1]
+    avg_imp = np.mean([m.feature_importances_ for _, m in models], axis=0)
+    idx_sorted = np.argsort(avg_imp)[::-1]
     for i in range(min(15, len(feature_names))):
         j = idx_sorted[i]
         name = feature_names[j] if j < len(feature_names) else f"feat_{j}"
-        print(f"  {i+1:2d}. {name:20s} {importances[j]:.4f}")
+        print(f"  {i+1:2d}. {name:20s} {avg_imp[j]:.4f}")
 
-    # ── Step 10: Save model ──
-    print("\nSTEP 10: Saving model")
+    # ── Step 10: Save ensemble ──
+    print("\nSTEP 10: Saving ensemble model")
     print("-" * 40)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
+    ensemble = {
+        'models': [(name, model) for name, model in models],
+        'weights': [1.0/3, 1.0/3, 1.0/3],  # equal weighting
+    }
     with open(os.path.join(MODEL_DIR, "mutation_regressor.pkl"), "wb") as f:
-        pickle.dump(reg, f)
+        pickle.dump(ensemble, f)
     with open(os.path.join(MODEL_DIR, "scaler.pkl"), "wb") as f:
         pickle.dump(scaler, f)
 
     meta = {
-        "model_type": "GradientBoostingRegressor (publication-ready)",
+        "model_type": "Ensemble (GradientBoosting + XGBoost + RandomForest)",
         "prediction_target": "DDG (kcal/mol)",
+        "n_models": 3,
         "n_features": int(X_train.shape[1]),
-        "feature_version": "v4_publication_regression",
+        "feature_version": "v5_ensemble_regression",
         "training_samples": int(X_train.shape[0]),
         "stabilizing_samples": int(n_pos),
         "destabilizing_samples": int(n_neg),
@@ -693,8 +749,8 @@ def main():
         },
         "synthetic_data": False,
         "independent_test_set": "S669 (669 mutations)",
-        "cv_mae": round(float(-cv_mae.mean()), 4),
-        "cv_r2": round(float(cv_r2.mean()), 4),
+        "cv_mae": round(float(cv_mae_ens), 4),
+        "cv_r2": round(float(cv_r2_ens), 4),
         "cv_pearson": round(float(cv_pearson), 4),
         "cv_spearman": round(float(cv_spearman), 4),
         "cv_accuracy": round(float(cv_acc), 4),
@@ -711,15 +767,15 @@ def main():
     with open(os.path.join(MODEL_DIR, "model_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"  Saved mutation_regressor.pkl")
+    print(f"  Saved mutation_regressor.pkl (ensemble)")
     print(f"  Saved scaler.pkl")
     print(f"  Saved model_meta.json")
 
     print("\n" + "=" * 70)
-    print("TRAINING COMPLETE")
+    print("TRAINING COMPLETE — ENSEMBLE MODEL")
     print(f"  Training: {X_train.shape[0]} real experimental mutations")
     print(f"  Test (S669): {X_test.shape[0]} independent mutations")
-    print(f"  CV MAE: {-cv_mae.mean():.4f} kcal/mol")
+    print(f"  CV MAE: {cv_mae_ens:.4f} kcal/mol")
     print(f"  CV Pearson: {cv_pearson:.4f}")
     print(f"  CV Accuracy (threshold): {cv_acc:.4f}")
     print(f"  S669 MAE: {mae:.4f} kcal/mol")
