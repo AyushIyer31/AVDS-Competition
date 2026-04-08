@@ -1,5 +1,6 @@
-"""Publication-Ready Protein Stability Prediction Model.
+"""Publication-Ready Protein Stability Prediction Model (Regression).
 
+Predicts ΔΔG values directly using GradientBoostingRegressor.
 Trained ONLY on real experimental data — no synthetic mutations.
 
 Data sources:
@@ -11,10 +12,10 @@ Independent test set (never seen during training):
   - S669 (669 mutations) — held out entirely
 
 Evaluation:
-  - 10-fold stratified cross-validation on training set
+  - 10-fold cross-validation on training set
   - Leave-one-protein-out cross-validation (generalization)
   - Independent test on S669
-  - Metrics: Accuracy, F1, AUC, Precision, Recall, MAE, Pearson r
+  - Metrics: MAE, RMSE, Pearson r, Spearman r, + classification metrics via thresholding
 """
 
 import os
@@ -25,14 +26,14 @@ import pandas as pd
 import pickle
 from collections import defaultdict
 
-from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import (
-    StratifiedKFold, cross_val_score, cross_val_predict, GroupKFold
+    KFold, cross_val_score, cross_val_predict, GroupKFold
 )
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score, precision_score, recall_score,
-    classification_report, mean_absolute_error, confusion_matrix
+    mean_absolute_error, mean_squared_error, r2_score, confusion_matrix
 )
 from scipy.stats import pearsonr, spearmanr
 import warnings
@@ -524,24 +525,17 @@ def main():
     X_test_scaled = scaler.transform(X_test)
     print(f"  Scaled {X_train.shape[1]} features")
 
-    # ── Step 5: Train classifier ──
-    print("\nSTEP 5: Training GradientBoosting classifier")
+    # ── Step 5: Train regressor ──
+    print("\nSTEP 5: Training GradientBoosting regressor (predicting DDG)")
     print("-" * 40)
 
-    # Class weight for imbalanced data
     n_pos = np.sum(y_train == 1)
     n_neg = np.sum(y_train == 0)
-    print(f"  Class ratio: 1:{n_neg/max(n_pos,1):.1f} (stabilizing:destabilizing)")
+    print(f"  Stabilizing (DDG<0): {n_pos}, Destabilizing (DDG>=0): {n_neg}")
+    print(f"  DDG range: [{y_train_ddg.min():.2f}, {y_train_ddg.max():.2f}] kcal/mol")
+    print(f"  DDG mean: {y_train_ddg.mean():.2f}, median: {np.median(y_train_ddg):.2f}")
 
-    # Use balanced sample weights
-    sample_weights = np.ones(len(y_train))
-    if n_pos > 0 and n_neg > 0:
-        w_pos = len(y_train) / (2 * n_pos)
-        w_neg = len(y_train) / (2 * n_neg)
-        sample_weights[y_train == 1] = w_pos
-        sample_weights[y_train == 0] = w_neg
-
-    clf = GradientBoostingClassifier(
+    reg = GradientBoostingRegressor(
         n_estimators=500,
         max_depth=5,
         learning_rate=0.05,
@@ -549,47 +543,65 @@ def main():
         min_samples_leaf=10,
         min_samples_split=20,
         max_features='sqrt',
+        loss='huber',           # robust to outliers in DDG
+        alpha=0.9,
         random_state=42,
         verbose=0,
     )
-    clf.fit(X_train_scaled, y_train, sample_weight=sample_weights)
-    print("  Classifier trained.")
+    reg.fit(X_train_scaled, y_train_ddg)
+    print("  Regressor trained.")
 
     # ── Step 6: Cross-validation on training set ──
-    print("\nSTEP 6: Cross-validation (10-fold stratified)")
+    print("\nSTEP 6: Cross-validation (10-fold)")
     print("-" * 40)
-    skf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(clf, X_train_scaled, y_train, cv=skf, scoring='accuracy')
-    cv_f1 = cross_val_score(clf, X_train_scaled, y_train, cv=skf, scoring='f1')
-    cv_auc = cross_val_score(clf, X_train_scaled, y_train, cv=skf, scoring='roc_auc')
-    print(f"  CV Accuracy: {cv_scores.mean():.4f} +/- {cv_scores.std():.4f}")
-    print(f"  CV F1:       {cv_f1.mean():.4f} +/- {cv_f1.std():.4f}")
-    print(f"  CV AUC:      {cv_auc.mean():.4f} +/- {cv_auc.std():.4f}")
+    kf = KFold(n_splits=10, shuffle=True, random_state=42)
+
+    cv_mae = cross_val_score(reg, X_train_scaled, y_train_ddg, cv=kf,
+                             scoring='neg_mean_absolute_error')
+    cv_r2 = cross_val_score(reg, X_train_scaled, y_train_ddg, cv=kf,
+                            scoring='r2')
+    # Get CV predictions for Pearson/classification metrics
+    cv_preds = cross_val_predict(reg, X_train_scaled, y_train_ddg, cv=kf)
+    cv_pearson, _ = pearsonr(cv_preds, y_train_ddg)
+    cv_spearman, _ = spearmanr(cv_preds, y_train_ddg)
+    # Classification from regression: predict stabilizing if predicted DDG < 0
+    cv_binary_pred = (cv_preds < 0).astype(int)
+    cv_acc = accuracy_score(y_train, cv_binary_pred)
+    cv_f1_val = f1_score(y_train, cv_binary_pred)
+
+    print(f"  CV MAE:      {-cv_mae.mean():.4f} +/- {cv_mae.std():.4f} kcal/mol")
+    print(f"  CV R²:       {cv_r2.mean():.4f} +/- {cv_r2.std():.4f}")
+    print(f"  CV Pearson:  {cv_pearson:.4f}")
+    print(f"  CV Spearman: {cv_spearman:.4f}")
+    print(f"  CV Accuracy (from threshold): {cv_acc:.4f}")
+    print(f"  CV F1 (from threshold):       {cv_f1_val:.4f}")
 
     # ── Step 7: Leave-one-protein-out CV (generalization) ──
     print("\nSTEP 7: Leave-one-protein-out cross-validation")
     print("-" * 40)
-    # Group by protein, but only use proteins with enough samples
     protein_arr = np.array(train_proteins)
     unique_proteins = list(set(train_proteins))
     protein_sizes = {p: np.sum(protein_arr == p) for p in unique_proteins}
-    # Use proteins with >= 5 mutations for meaningful groups
     big_proteins = [p for p, s in protein_sizes.items() if s >= 5]
     print(f"  Proteins with >= 5 mutations: {len(big_proteins)}")
 
     if len(big_proteins) >= 5:
-        # Create group labels (proteins with < 5 mutations get group -1, excluded from LOPO)
         groups = np.array([train_proteins[i] if train_proteins[i] in big_proteins else f"_small_{i}"
                           for i in range(len(train_proteins))])
         gkf = GroupKFold(n_splits=min(len(big_proteins), 20))
         mask = np.array([p in big_proteins for p in train_proteins])
         if np.sum(mask) > 100:
-            lopo_scores = cross_val_score(clf, X_train_scaled[mask], y_train[mask],
-                                          cv=gkf, groups=groups[mask], scoring='accuracy')
-            lopo_auc = cross_val_score(clf, X_train_scaled[mask], y_train[mask],
-                                       cv=gkf, groups=groups[mask], scoring='roc_auc')
-            print(f"  LOPO Accuracy: {lopo_scores.mean():.4f} +/- {lopo_scores.std():.4f}")
-            print(f"  LOPO AUC:      {lopo_auc.mean():.4f} +/- {lopo_auc.std():.4f}")
+            lopo_mae = cross_val_score(reg, X_train_scaled[mask], y_train_ddg[mask],
+                                       cv=gkf, groups=groups[mask],
+                                       scoring='neg_mean_absolute_error')
+            lopo_preds = cross_val_predict(reg, X_train_scaled[mask], y_train_ddg[mask],
+                                           cv=gkf, groups=groups[mask])
+            lopo_pearson, _ = pearsonr(lopo_preds, y_train_ddg[mask])
+            lopo_binary = (lopo_preds < 0).astype(int)
+            lopo_acc = accuracy_score(y_train[mask], lopo_binary)
+            print(f"  LOPO MAE:      {-lopo_mae.mean():.4f} +/- {lopo_mae.std():.4f}")
+            print(f"  LOPO Pearson:  {lopo_pearson:.4f}")
+            print(f"  LOPO Accuracy: {lopo_acc:.4f}")
         else:
             print("  Not enough grouped samples for LOPO CV")
     else:
@@ -598,37 +610,40 @@ def main():
     # ── Step 8: Independent test on S669 ──
     print("\nSTEP 8: Independent test on S669")
     print("-" * 40)
-    y_pred = clf.predict(X_test_scaled)
-    y_prob = clf.predict_proba(X_test_scaled)[:, 1]
+    y_pred_ddg = reg.predict(X_test_scaled)
 
-    acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
+    # Regression metrics
+    mae = mean_absolute_error(y_test_ddg, y_pred_ddg)
+    rmse = np.sqrt(mean_squared_error(y_test_ddg, y_pred_ddg))
+    r2 = r2_score(y_test_ddg, y_pred_ddg)
+    pearson_r_val, pearson_p = pearsonr(y_pred_ddg, y_test_ddg)
+    spearman_r_val, spearman_p = spearmanr(y_pred_ddg, y_test_ddg)
+
+    print(f"  MAE:         {mae:.4f} kcal/mol")
+    print(f"  RMSE:        {rmse:.4f} kcal/mol")
+    print(f"  R²:          {r2:.4f}")
+    print(f"  Pearson r:   {pearson_r_val:.4f} (p={pearson_p:.2e})")
+    print(f"  Spearman r:  {spearman_r_val:.4f} (p={spearman_p:.2e})")
+
+    # Classification via thresholding (DDG < 0 = stabilizing)
+    y_pred_binary = (y_pred_ddg < 0).astype(int)
+    acc = accuracy_score(y_test, y_pred_binary)
+    f1 = f1_score(y_test, y_pred_binary)
+    prec = precision_score(y_test, y_pred_binary, zero_division=0)
+    rec = recall_score(y_test, y_pred_binary, zero_division=0)
     try:
-        auc = roc_auc_score(y_test, y_prob)
+        auc = roc_auc_score(y_test, -y_pred_ddg)  # more negative = more stabilizing
     except ValueError:
         auc = 0.0
-    prec = precision_score(y_test, y_pred, zero_division=0)
-    rec = recall_score(y_test, y_pred, zero_division=0)
-    mae = mean_absolute_error(y_test_ddg, clf.predict_proba(X_test_scaled)[:, 1] * -2)  # rough DDG estimate
 
-    # Pearson/Spearman correlation between predicted probability and actual DDG
-    pearson_r, pearson_p = pearsonr(y_prob, -y_test_ddg)  # negative because lower DDG = more stabilizing
-    spearman_r, spearman_p = spearmanr(y_prob, -y_test_ddg)
-
+    print(f"\n  Classification (threshold DDG < 0):")
     print(f"  Accuracy:    {acc:.4f}")
     print(f"  F1 Score:    {f1:.4f}")
     print(f"  AUC-ROC:     {auc:.4f}")
     print(f"  Precision:   {prec:.4f}")
     print(f"  Recall:      {rec:.4f}")
-    print(f"  Pearson r:   {pearson_r:.4f} (p={pearson_p:.2e})")
-    print(f"  Spearman r:  {spearman_r:.4f} (p={spearman_p:.2e})")
-    print()
-    print("  Confusion Matrix:")
-    cm = confusion_matrix(y_test, y_pred)
-    print(f"    TN={cm[0][0]}, FP={cm[0][1]}")
-    print(f"    FN={cm[1][0]}, TP={cm[1][1]}")
-    print()
-    print(classification_report(y_test, y_pred, target_names=['Destabilizing', 'Stabilizing']))
+    cm = confusion_matrix(y_test, y_pred_binary)
+    print(f"  TN={cm[0][0]}, FP={cm[0][1]}, FN={cm[1][0]}, TP={cm[1][1]}")
 
     # ── Step 9: Feature importance ──
     print("\nSTEP 9: Top 15 feature importances")
@@ -646,7 +661,7 @@ def main():
         'aromatic_change', 'small→large', 'large→small',
         'cons_wt', 'cons_mut', 'cons_delta',
     ]
-    importances = clf.feature_importances_
+    importances = reg.feature_importances_
     idx_sorted = np.argsort(importances)[::-1]
     for i in range(min(15, len(feature_names))):
         j = idx_sorted[i]
@@ -658,18 +673,19 @@ def main():
     print("-" * 40)
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    with open(os.path.join(MODEL_DIR, "mutation_classifier.pkl"), "wb") as f:
-        pickle.dump(clf, f)
+    with open(os.path.join(MODEL_DIR, "mutation_regressor.pkl"), "wb") as f:
+        pickle.dump(reg, f)
     with open(os.path.join(MODEL_DIR, "scaler.pkl"), "wb") as f:
         pickle.dump(scaler, f)
 
     meta = {
-        "model_type": "GradientBoosting (publication-ready)",
-        "n_features": X_train.shape[1],
-        "feature_version": "v4_publication",
+        "model_type": "GradientBoostingRegressor (publication-ready)",
+        "prediction_target": "DDG (kcal/mol)",
+        "n_features": int(X_train.shape[1]),
+        "feature_version": "v4_publication_regression",
         "training_samples": int(X_train.shape[0]),
-        "stabilizing_samples": int(np.sum(y_train == 1)),
-        "destabilizing_samples": int(np.sum(y_train == 0)),
+        "stabilizing_samples": int(n_pos),
+        "destabilizing_samples": int(n_neg),
         "data_sources": {
             "FireProtDB": int(source_counts.get('FireProtDB', 0)),
             "ProDDG": int(source_counts.get('ProDDG', 0)),
@@ -677,22 +693,25 @@ def main():
         },
         "synthetic_data": False,
         "independent_test_set": "S669 (669 mutations)",
-        "cv_accuracy": round(float(cv_scores.mean()), 4),
-        "cv_accuracy_std": round(float(cv_scores.std()), 4),
-        "cv_f1": round(float(cv_f1.mean()), 4),
-        "cv_auc": round(float(cv_auc.mean()), 4),
+        "cv_mae": round(float(-cv_mae.mean()), 4),
+        "cv_r2": round(float(cv_r2.mean()), 4),
+        "cv_pearson": round(float(cv_pearson), 4),
+        "cv_spearman": round(float(cv_spearman), 4),
+        "cv_accuracy": round(float(cv_acc), 4),
+        "cv_f1": round(float(cv_f1_val), 4),
+        "test_mae": round(float(mae), 4),
+        "test_rmse": round(float(rmse), 4),
+        "test_r2": round(float(r2), 4),
+        "test_pearson_r": round(float(pearson_r_val), 4),
+        "test_spearman_r": round(float(spearman_r_val), 4),
         "test_accuracy": round(float(acc), 4),
         "test_f1": round(float(f1), 4),
         "test_auc": round(float(auc), 4),
-        "test_precision": round(float(prec), 4),
-        "test_recall": round(float(rec), 4),
-        "test_pearson_r": round(float(pearson_r), 4),
-        "test_spearman_r": round(float(spearman_r), 4),
     }
     with open(os.path.join(MODEL_DIR, "model_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"  Saved mutation_classifier.pkl")
+    print(f"  Saved mutation_regressor.pkl")
     print(f"  Saved scaler.pkl")
     print(f"  Saved model_meta.json")
 
@@ -700,9 +719,12 @@ def main():
     print("TRAINING COMPLETE")
     print(f"  Training: {X_train.shape[0]} real experimental mutations")
     print(f"  Test (S669): {X_test.shape[0]} independent mutations")
-    print(f"  CV Accuracy: {cv_scores.mean():.4f}")
-    print(f"  Test Accuracy: {acc:.4f}")
-    print(f"  Test AUC: {auc:.4f}")
+    print(f"  CV MAE: {-cv_mae.mean():.4f} kcal/mol")
+    print(f"  CV Pearson: {cv_pearson:.4f}")
+    print(f"  CV Accuracy (threshold): {cv_acc:.4f}")
+    print(f"  S669 MAE: {mae:.4f} kcal/mol")
+    print(f"  S669 Pearson: {pearson_r_val:.4f}")
+    print(f"  S669 Accuracy (threshold): {acc:.4f}")
     print(f"  Synthetic data used: NONE")
     print("=" * 70)
 

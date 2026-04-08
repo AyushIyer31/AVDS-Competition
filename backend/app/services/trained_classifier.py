@@ -1,24 +1,17 @@
-"""Publication-ready GradientBoosting classifier for mutation thermostability prediction.
+"""Publication-ready GradientBoostingRegressor for mutation thermostability prediction.
 
+Predicts DDG (kcal/mol) directly — negative = stabilizing, positive = destabilizing.
 Trained on real experimental data only (no synthetic mutations):
 - FireProtDB: ~3,400 curated mutations with DDG values
 - ProDDG (S2648): ~2,300 mutations with DDG values
 - ThermoMutDB: ~4,000 mutations with DDG values
 
-42 features:
-- 6 physicochemical deltas (hydrophobicity, volume, charge, flexibility, helix, sheet)
-- 6 absolute deltas
-- 1 BLOSUM62 substitution score
-- 3 secondary structure propensities
-- 1 estimated RSA
-- 4 sequence context features
-- 6 thermostability-specific features
-- 9 interaction terms
-- 6 additional features
+42 features, same as classifier version.
 
-Independent test on S669 (669 mutations never seen during training):
-  Accuracy: 73.4%, AUC: 64.9%, Pearson r: 0.30
-Cross-validated (10-fold): Accuracy: 77.1%, AUC: 84.0%
+Independent test on S669 (669 mutations):
+  MAE: 1.18 kcal/mol, Pearson r: 0.31, Accuracy (threshold): 73.4%
+Cross-validated (10-fold):
+  MAE: 1.09 kcal/mol, Pearson r: 0.66, Accuracy (threshold): 76.4%
 """
 
 import numpy as np
@@ -28,11 +21,11 @@ import json
 
 # Path to pre-trained model files
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "trained_models")
-MODEL_PATH = os.path.join(MODEL_DIR, "mutation_classifier.pkl")
+REGRESSOR_PATH = os.path.join(MODEL_DIR, "mutation_regressor.pkl")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 META_PATH = os.path.join(MODEL_DIR, "model_meta.json")
 
-_classifier = None
+_regressor = None
 _scaler = None
 _training_metrics = None
 
@@ -90,7 +83,6 @@ BLOSUM62_DIAG = {
     'S': 4, 'T': 5, 'W': 11, 'Y': 7, 'V': 4,
 }
 
-# BLOSUM62 matrix
 _BLOSUM62 = {}
 _blosum_str = """
    A  R  N  D  C  Q  E  G  H  I  L  K  M  F  P  S  T  W  Y  V
@@ -252,62 +244,67 @@ def _extract_features(wt_aa: str, position: int, mut_aa: str,
 # ═══════════════════════════════════════════════════════════
 
 def train_model(force_retrain: bool = False) -> dict:
-    """Load pre-trained model from disk."""
-    global _classifier, _scaler, _training_metrics
+    """Load pre-trained regressor from disk."""
+    global _regressor, _scaler, _training_metrics
 
-    if not force_retrain and os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-        with open(MODEL_PATH, "rb") as f:
-            _classifier = pickle.load(f)
+    if not force_retrain and os.path.exists(REGRESSOR_PATH) and os.path.exists(SCALER_PATH):
+        with open(REGRESSOR_PATH, "rb") as f:
+            _regressor = pickle.load(f)
         with open(SCALER_PATH, "rb") as f:
             _scaler = pickle.load(f)
 
-        # Load metrics from meta file
         if os.path.exists(META_PATH):
             with open(META_PATH) as f:
                 _training_metrics = json.load(f)
             _training_metrics["loaded_from_cache"] = True
         else:
             _training_metrics = {
-                "model_type": "GradientBoosting (publication-ready)",
+                "model_type": "GradientBoostingRegressor (publication-ready)",
                 "loaded_from_cache": True,
             }
         return _training_metrics
 
     raise FileNotFoundError(
-        f"Pre-trained model not found at {MODEL_PATH}. "
+        f"Pre-trained model not found at {REGRESSOR_PATH}. "
         "Run train_publication_model.py first."
     )
 
 
 def predict_mutation(wt_aa: str, position: int, mut_aa: str,
                      sequence: str = None, **kwargs) -> dict:
-    """Predict whether a mutation is stabilizing using the trained classifier."""
-    global _classifier, _scaler
+    """Predict DDG for a mutation and derive stability classification."""
+    global _regressor, _scaler
 
-    if _classifier is None:
+    if _regressor is None:
         train_model()
 
     features = np.array([_extract_features(wt_aa, position, mut_aa, sequence=sequence)])
     features_scaled = _scaler.transform(features)
 
-    prediction = _classifier.predict(features_scaled)[0]
-    probabilities = _classifier.predict_proba(features_scaled)[0]
+    predicted_ddg = float(_regressor.predict(features_scaled)[0])
 
-    prob_beneficial = float(probabilities[1]) if len(probabilities) > 1 else float(probabilities[0])
+    # DDG < 0 means stabilizing (beneficial)
+    is_beneficial = predicted_ddg < 0
+
+    # Convert DDG to a probability-like confidence score
+    # Use sigmoid-like mapping: more negative DDG = higher confidence of stabilizing
+    confidence = 1.0 / (1.0 + np.exp(predicted_ddg))  # sigmoid(-ddg)
 
     return {
-        "predicted_beneficial": bool(prediction),
-        "confidence": round(float(max(probabilities)), 4),
-        "probability_beneficial": round(prob_beneficial, 4),
+        "predicted_beneficial": is_beneficial,
+        "predicted_ddg": round(predicted_ddg, 4),
+        "confidence": round(float(confidence), 4),
+        "probability_beneficial": round(float(confidence), 4),
     }
 
 
 def predict_candidate_mutations(mutations: list[str], sequence: str = None) -> dict:
     """Predict all mutations in a candidate and return aggregate assessment."""
-    if _classifier is None:
+    if _regressor is None:
         train_model()
 
     predictions = []
+    total_ddg = 0.0
     for mut_str in mutations:
         wt_aa = mut_str[0]
         mut_aa = mut_str[-1]
@@ -316,6 +313,7 @@ def predict_candidate_mutations(mutations: list[str], sequence: str = None) -> d
         pred = predict_mutation(wt_aa, position, mut_aa, sequence=sequence)
         pred["mutation"] = mut_str
         predictions.append(pred)
+        total_ddg += pred["predicted_ddg"]
 
     beneficial_count = sum(1 for p in predictions if p["predicted_beneficial"])
     avg_confidence = np.mean([p["confidence"] for p in predictions])
@@ -325,6 +323,7 @@ def predict_candidate_mutations(mutations: list[str], sequence: str = None) -> d
         "all_beneficial": beneficial_count == len(predictions),
         "beneficial_count": beneficial_count,
         "total": len(predictions),
+        "total_predicted_ddg": round(total_ddg, 4),
         "average_confidence": round(float(avg_confidence), 4),
     }
 
