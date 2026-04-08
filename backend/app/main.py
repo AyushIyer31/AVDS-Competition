@@ -128,6 +128,8 @@ async def compute_embedding(req: SequenceInput):
             embedding_dim=len(embedding),
             mean_embedding=embedding.tolist(),
         )
+    except ImportError:
+        raise HTTPException(status_code=503, detail="ESM-2 model not available on this server (requires PyTorch)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -142,6 +144,8 @@ async def scan_mutations(req: SequenceInput):
         from .services import esm_engine
         mutations = esm_engine.scan_beneficial_mutations(req.sequence, top_k=30)
         return {"sequence_length": len(req.sequence), "beneficial_mutations": mutations}
+    except ImportError:
+        raise HTTPException(status_code=503, detail="ESM-2 model not available on this server (requires PyTorch)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
