@@ -1,15 +1,24 @@
-"""Trained GradientBoosting classifier for mutation thermostability prediction.
+"""Publication-ready GradientBoosting classifier for mutation thermostability prediction.
 
-Trained on FireProtDB + extremophile + biophysics synthetic data (52,275 noise-filtered from 52,992 total) with 76 features:
-- 25 biochemical properties (amino acid property deltas, BLOSUM62, etc.)
-- 8 thermostability-specific features (proline, deamidation, salt bridges, etc.)
-- 11 structural features (RSA, secondary structure, contact density, active site distance)
-- 3 AlphaFold 2 pLDDT confidence features
+Trained on real experimental data only (no synthetic mutations):
+- FireProtDB: ~3,400 curated mutations with DDG values
+- ProDDG (S2648): ~2,300 mutations with DDG values
+- ThermoMutDB: ~4,000 mutations with DDG values
+
+42 features:
+- 6 physicochemical deltas (hydrophobicity, volume, charge, flexibility, helix, sheet)
+- 6 absolute deltas
+- 1 BLOSUM62 substitution score
+- 3 secondary structure propensities
+- 1 estimated RSA
+- 4 sequence context features
+- 6 thermostability-specific features
 - 9 interaction terms
-- 20 ESM-2 protein language model features
+- 6 additional features
 
-Noise filtering removes consistently misclassified samples (8 rounds, >65% misclassification rate).
-Achieves 99.9% cross-validated accuracy on held-out folds (10-fold stratified).
+Independent test on S669 (669 mutations never seen during training):
+  Accuracy: 73.4%, AUC: 64.9%, Pearson r: 0.30
+Cross-validated (10-fold): Accuracy: 77.1%, AUC: 84.0%
 """
 
 import numpy as np
@@ -17,165 +26,233 @@ import pickle
 import os
 import json
 
-from . import amino_acid_props as aap
-
 # Path to pre-trained model files
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "trained_models")
 MODEL_PATH = os.path.join(MODEL_DIR, "mutation_classifier.pkl")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
-ESM_CACHE_PATH = os.path.join(MODEL_DIR, "esm2_embeddings.pkl")
+META_PATH = os.path.join(MODEL_DIR, "model_meta.json")
 
 _classifier = None
 _scaler = None
 _training_metrics = None
-_esm_cache = None
+
+# ═══════════════════════════════════════════════════════════
+# Amino acid property tables
+# ═══════════════════════════════════════════════════════════
+AA_SET = set("ACDEFGHIKLMNPQRSTVWY")
+
+HYDROPHOBICITY = {
+    'A': 1.8, 'C': 2.5, 'D': -3.5, 'E': -3.5, 'F': 2.8,
+    'G': -0.4, 'H': -3.2, 'I': 4.5, 'K': -3.9, 'L': 3.8,
+    'M': 1.9, 'N': -3.5, 'P': -1.6, 'Q': -3.5, 'R': -4.5,
+    'S': -0.8, 'T': -0.7, 'V': 4.2, 'W': -0.9, 'Y': -1.3,
+}
+
+VOLUME = {
+    'A': 88.6, 'C': 108.5, 'D': 111.1, 'E': 138.4, 'F': 189.9,
+    'G': 60.1, 'H': 153.2, 'I': 166.7, 'K': 168.6, 'L': 166.7,
+    'M': 162.9, 'N': 114.1, 'P': 112.7, 'Q': 143.8, 'R': 173.4,
+    'S': 89.0, 'T': 116.1, 'V': 140.0, 'W': 227.8, 'Y': 193.6,
+}
+
+CHARGE = {
+    'A': 0, 'C': 0, 'D': -1, 'E': -1, 'F': 0,
+    'G': 0, 'H': 0.5, 'I': 0, 'K': 1, 'L': 0,
+    'M': 0, 'N': 0, 'P': 0, 'Q': 0, 'R': 1,
+    'S': 0, 'T': 0, 'V': 0, 'W': 0, 'Y': 0,
+}
+
+FLEXIBILITY = {
+    'A': 0.36, 'C': 0.35, 'D': 0.51, 'E': 0.50, 'F': 0.31,
+    'G': 0.54, 'H': 0.32, 'I': 0.46, 'K': 0.47, 'L': 0.40,
+    'M': 0.30, 'N': 0.46, 'P': 0.51, 'Q': 0.49, 'R': 0.53,
+    'S': 0.51, 'T': 0.44, 'V': 0.39, 'W': 0.31, 'Y': 0.42,
+}
+
+HELIX_PROPENSITY = {
+    'A': 1.42, 'C': 0.70, 'D': 1.01, 'E': 1.51, 'F': 1.13,
+    'G': 0.57, 'H': 1.00, 'I': 1.08, 'K': 1.16, 'L': 1.21,
+    'M': 1.45, 'N': 0.67, 'P': 0.57, 'Q': 1.11, 'R': 0.98,
+    'S': 0.77, 'T': 0.83, 'V': 1.06, 'W': 1.08, 'Y': 0.69,
+}
+
+SHEET_PROPENSITY = {
+    'A': 0.83, 'C': 1.19, 'D': 0.54, 'E': 0.37, 'F': 1.38,
+    'G': 0.75, 'H': 0.87, 'I': 1.60, 'K': 0.74, 'L': 1.30,
+    'M': 1.05, 'N': 0.89, 'P': 0.55, 'Q': 1.10, 'R': 0.93,
+    'S': 0.75, 'T': 1.19, 'V': 1.70, 'W': 1.37, 'Y': 1.47,
+}
+
+BLOSUM62_DIAG = {
+    'A': 4, 'R': 5, 'N': 6, 'D': 6, 'C': 9,
+    'Q': 5, 'E': 5, 'G': 6, 'H': 8, 'I': 4,
+    'L': 4, 'K': 5, 'M': 5, 'F': 6, 'P': 7,
+    'S': 4, 'T': 5, 'W': 11, 'Y': 7, 'V': 4,
+}
+
+# BLOSUM62 matrix
+_BLOSUM62 = {}
+_blosum_str = """
+   A  R  N  D  C  Q  E  G  H  I  L  K  M  F  P  S  T  W  Y  V
+A  4 -1 -2 -2  0 -1 -1  0 -2 -1 -1 -1 -1 -2 -1  1  0 -3 -2  0
+R -1  5  0 -2 -3  1  0 -2  0 -3 -2  2 -1 -3 -2 -1 -1 -3 -2 -3
+N -2  0  6  1 -3  0  0  0  1 -3 -3  0 -2 -3 -2  1  0 -4 -2 -3
+D -2 -2  1  6 -3  0  2 -1 -1 -3 -4 -1 -3 -3 -1  0 -1 -4 -3 -3
+C  0 -3 -3 -3  9 -3 -4 -3 -3 -1 -1 -3 -1 -2 -3 -1 -1 -2 -2 -1
+Q -1  1  0  0 -3  5  2 -2  0 -3 -2  1  0 -3 -1  0 -1 -2 -1 -2
+E -1  0  0  2 -4  2  5 -2  0 -3 -3  1 -2 -3 -1  0 -1 -3 -2 -2
+G  0 -2  0 -1 -3 -2 -2  6 -2 -4 -4 -2 -3 -3 -2  0 -2 -2 -3 -3
+H -2  0  1 -1 -3  0  0 -2  8 -3 -3 -1 -2 -1 -2 -1 -2 -2  2 -3
+I -1 -3 -3 -3 -1 -3 -3 -4 -3  4  2 -3  1  0 -3 -2 -1 -3 -1  3
+L -1 -2 -3 -4 -1 -2 -3 -4 -3  2  4 -2  2  0 -3 -2 -1 -2 -1  1
+K -1  2  0 -1 -3  1  1 -2 -1 -3 -2  5 -1 -3 -1  0 -1 -3 -2 -2
+M -1 -1 -2 -3 -1  0 -2 -3 -2  1  2 -1  5  0 -2 -1 -1 -1 -1  1
+F -2 -3 -3 -3 -2 -3 -3 -3 -1  0  0 -3  0  6 -4 -2 -2  1  3 -1
+P -1 -2 -2 -1 -3 -1 -1 -2 -2 -3 -3 -1 -2 -4  7 -1 -1 -4 -3 -2
+S  1 -1  1  0 -1  0  0  0 -1 -2 -2  0 -1 -2 -1  4  1 -3 -2 -2
+T  0 -1  0 -1 -1 -1 -1 -2 -2 -1 -1 -1 -1 -2 -1  1  5 -2 -2  0
+W -3 -3 -4 -4 -2 -2 -3 -2 -2 -3 -2 -3 -1  1 -4 -3 -2 11  2 -3
+Y -2 -2 -2 -3 -2 -1 -2 -3  2 -1 -1 -2 -1  3 -3 -2 -2  2  7 -1
+V  0 -3 -3 -3 -1 -2 -2 -3 -3  3  1 -2  1 -1 -2 -2  0 -3 -1  4
+"""
+_lines = [l for l in _blosum_str.strip().split('\n') if l.strip()]
+_header = _lines[0].split()
+for _line in _lines[1:]:
+    _parts = _line.split()
+    _aa1 = _parts[0]
+    for _j, _aa2 in enumerate(_header):
+        _BLOSUM62[(_aa1, _aa2)] = int(_parts[_j + 1])
 
 
-def _load_esm_cache():
-    """Load cached ESM-2 embeddings."""
-    global _esm_cache
-    if _esm_cache is None and os.path.exists(ESM_CACHE_PATH):
-        with open(ESM_CACHE_PATH, 'rb') as f:
-            _esm_cache = pickle.load(f)
-    return _esm_cache or {}
+# ═══════════════════════════════════════════════════════════
+# Feature extraction (42 features — matches training script)
+# ═══════════════════════════════════════════════════════════
+
+def _estimate_rsa(sequence, position):
+    if not sequence or position < 1 or position > len(sequence):
+        return 0.5
+    idx = position - 1
+    aa = sequence[idx]
+    h = HYDROPHOBICITY.get(aa, 0)
+    base = 0.5 - h * 0.05
+    rel_pos = idx / max(len(sequence) - 1, 1)
+    if rel_pos < 0.05 or rel_pos > 0.95:
+        base += 0.2
+    window = sequence[max(0, idx-3):idx+4]
+    avg_h = np.mean([HYDROPHOBICITY.get(a, 0) for a in window])
+    base -= avg_h * 0.02
+    return max(0.0, min(1.0, base))
 
 
-def _get_esm_features(uid: str, position: int) -> list[float]:
-    """Extract 20 summary features from ESM-2 embedding at mutation position."""
-    from scipy import stats
-
-    cache = _load_esm_cache()
-    embeddings = cache.get(uid, {})
-    if not embeddings or position not in embeddings:
-        return [0.0] * 20
-
-    emb = embeddings[position]
-    f = [
-        float(np.mean(emb)), float(np.std(emb)),
-        float(np.max(emb)), float(np.min(emb)),
-        float(np.median(emb)),
-        float(np.percentile(emb, 25)), float(np.percentile(emb, 75)),
-        float(np.linalg.norm(emb)),
-        float(np.sum(emb > 1.0)), float(np.sum(emb < -1.0)),
-        float(stats.skew(emb)), float(stats.kurtosis(emb)),
-    ]
-    emb_abs = np.abs(emb) + 1e-10
-    emb_norm = emb_abs / emb_abs.sum()
-    f.append(float(-np.sum(emb_norm * np.log(emb_norm))))
-
-    neighbors = [embeddings.get(p) for p in [position-2, position-1, position+1, position+2]
-                 if p in embeddings]
-    if neighbors:
-        nm = np.mean(neighbors, axis=0)
-        f.append(float(np.linalg.norm(emb - nm)))
-        f.append(float(np.dot(emb, nm) / (np.linalg.norm(emb) * np.linalg.norm(nm) + 1e-10)))
-    else:
-        f.extend([0.0, 0.0])
-
-    window = [embeddings.get(p) for p in range(max(1, position-3), position+4)
-              if p in embeddings]
-    f.append(float(np.mean(np.std(window, axis=0))) if len(window) > 1 else 0.0)
-
-    for dim in [0, 1, 2, 3]:
-        f.append(float(emb[dim]))
-
-    return f  # 20 features
+def _estimate_secondary_structure(sequence, position):
+    if not sequence or position < 1 or position > len(sequence):
+        return 0.33, 0.33, 0.34
+    idx = position - 1
+    window = sequence[max(0, idx-4):idx+5]
+    h_score = np.mean([HELIX_PROPENSITY.get(a, 1.0) for a in window])
+    s_score = np.mean([SHEET_PROPENSITY.get(a, 1.0) for a in window])
+    total = h_score + s_score + 1.0
+    return h_score / total, s_score / total, 1.0 / total
 
 
 def _extract_features(wt_aa: str, position: int, mut_aa: str,
-                      sequence: str = None, uniprot_id: str = None) -> list[float]:
-    """Extract feature vector for a single mutation.
+                      sequence: str = None, **kwargs) -> list[float]:
+    """Extract 42 features for a single mutation (publication v4)."""
+    if wt_aa not in AA_SET or mut_aa not in AA_SET:
+        return [0.0] * 42
 
-    Structure-aware features + thermostability features + ESM-2 embeddings.
+    features = []
 
-    Feature breakdown (v3):
-      - 25 biochemical properties (amino acid deltas, BLOSUM62, categories)
-      - 8 thermostability-specific features (proline, deamidation, salt bridge, etc.)
-      - 11 structure-aware features (RSA, SS, contact density, active site distance)
-      - 3 AlphaFold pLDDT features
-      - 9 interaction terms
-      - 20 ESM-2 protein language model features
-      Total: 76 features
-    """
-    from .amino_acid_props import CATALYTIC_RESIDUES
+    # Physicochemical deltas (6)
+    dH = HYDROPHOBICITY.get(mut_aa, 0) - HYDROPHOBICITY.get(wt_aa, 0)
+    dV = VOLUME.get(mut_aa, 0) - VOLUME.get(wt_aa, 0)
+    dC = CHARGE.get(mut_aa, 0) - CHARGE.get(wt_aa, 0)
+    dF = FLEXIBILITY.get(mut_aa, 0) - FLEXIBILITY.get(wt_aa, 0)
+    dHelix = HELIX_PROPENSITY.get(mut_aa, 1) - HELIX_PROPENSITY.get(wt_aa, 1)
+    dSheet = SHEET_PROPENSITY.get(mut_aa, 1) - SHEET_PROPENSITY.get(wt_aa, 1)
+    features.extend([dH, dV, dC, dF, dHelix, dSheet])
 
-    # ── Base biochemical features (27) ──
-    f = aap.feature_vector_v2(wt_aa, mut_aa)
+    # Absolute deltas (6)
+    features.extend([abs(dH), abs(dV), abs(dC), abs(dF), abs(dHelix), abs(dSheet)])
 
-    # ── Thermostability-specific features (8) — NEW ──
-    thermo_feats = aap.thermostability_features(wt_aa, mut_aa, position, sequence)
-    f.extend(thermo_feats)
+    # BLOSUM62 (1)
+    features.append(_BLOSUM62.get((wt_aa, mut_aa), 0))
 
-    # ── Structure-aware features (11) — IMPROVED ──
-    # Use estimated structural properties from sequence context
+    # Secondary structure at position (3)
     if sequence:
-        rsa = aap.estimate_rsa(sequence, position)
-        helix_s, sheet_s, coil_s = aap.estimate_secondary_structure(sequence, position)
-        contact_d = aap.estimate_contact_density(sequence, position)
+        h, s, c = _estimate_secondary_structure(sequence, position)
     else:
-        rsa = 0.5
-        helix_s, sheet_s, coil_s = 0.33, 0.33, 0.34
-        contact_d = 0.5
+        h, s, c = 0.33, 0.33, 0.34
+    features.extend([h, s, c])
 
-    bf = 20.0 * (1.0 + rsa)  # Exposed residues have higher B-factors
-    cons = 5.0
+    # RSA (1)
+    rsa = _estimate_rsa(sequence, position) if sequence else 0.5
+    features.append(rsa)
 
-    in_cat = False
-    for _name, center in CATALYTIC_RESIDUES.items():
-        if abs((position - 1) - center) <= 5:
-            in_cat = True
-            break
+    # Sequence context (4)
+    if sequence and 1 <= position <= len(sequence):
+        idx = position - 1
+        window = sequence[max(0, idx-3):idx+4]
+        local_h = np.mean([HYDROPHOBICITY.get(a, 0) for a in window])
+        local_c = np.mean([CHARGE.get(a, 0) for a in window])
+        gp_count = sum(1 for a in window if a in ('G', 'P'))
+        rel_pos = idx / max(len(sequence) - 1, 1)
+        features.extend([local_h, local_c, gp_count / len(window), rel_pos])
+    else:
+        features.extend([0, 0, 0, 0.5])
 
-    dist_active = aap.distance_to_active_site(position)
-    dist_binding = aap.distance_to_substrate_binding(position)
+    # Thermostability features (6)
+    to_proline = 1.0 if mut_aa == 'P' and wt_aa != 'P' else 0.0
+    from_proline = 1.0 if wt_aa == 'P' and mut_aa != 'P' else 0.0
+    to_glycine = 1.0 if mut_aa == 'G' and wt_aa != 'G' else 0.0
+    deamid_risk = 0.0
+    if wt_aa in ('N', 'Q') and mut_aa not in ('N', 'Q'):
+        deamid_risk = -1.0
+    elif mut_aa in ('N', 'Q') and wt_aa not in ('N', 'Q'):
+        deamid_risk = 1.0
+    salt_bridge = 0.0
+    if mut_aa in ('D', 'E', 'K', 'R') and wt_aa not in ('D', 'E', 'K', 'R'):
+        salt_bridge = 1.0
+    elif wt_aa in ('D', 'E', 'K', 'R') and mut_aa not in ('D', 'E', 'K', 'R'):
+        salt_bridge = -1.0
+    cys_change = 0.0
+    if mut_aa == 'C' and wt_aa != 'C':
+        cys_change = 1.0
+    elif wt_aa == 'C' and mut_aa != 'C':
+        cys_change = -1.0
+    features.extend([to_proline, from_proline, to_glycine, deamid_risk, salt_bridge, cys_change])
 
-    f.append(rsa)                          # Estimated solvent accessibility
-    f.append(helix_s)                      # Helix propensity score
-    f.append(sheet_s)                      # Sheet propensity score
-    f.append(coil_s)                       # Coil propensity score
-    f.append(bf)                           # Estimated B-factor
-    f.append(cons)                         # Conservation score
-    f.append(1.0 if in_cat else 0.0)       # Near catalytic site
-    f.append(contact_d)                    # Contact density
-    f.append(dist_active)                  # Distance to active site (continuous)
-    f.append(dist_binding)                 # Distance to substrate binding
-    f.append(1.0 - dist_active)            # Active site proximity (inverted)
-
-    # ── AlphaFold pLDDT features (3) ──
-    plddt_val = max(0.3, 0.9 - rsa * 0.4)  # Higher confidence for buried residues
-    f.append(plddt_val)
-    f.append(1.0 if plddt_val < 0.5 else 0.0)  # Disordered
-    f.append(1.0 if plddt_val > 0.8 else 0.0)  # Very confident
-
-    # ── Interaction terms (9) ──
-    hd = abs(aap.HYDROPHOBICITY.get(mut_aa, 0) - aap.HYDROPHOBICITY.get(wt_aa, 0))
-    sd = abs(aap.SIZE.get(mut_aa, 0) - aap.SIZE.get(wt_aa, 0))
-    cd = abs(aap.CHARGE.get(mut_aa, 0) - aap.CHARGE.get(wt_aa, 0))
+    # Interaction terms (9)
     burial = 1.0 - rsa
-    f.extend([
-        hd * burial,                       # Hydrophobicity × burial
-        sd * burial,                       # Size × burial
-        cd * burial,                       # Charge × burial
-        hd * (1.0 if in_cat else 0.0),     # Hydrophobicity × catalytic
-        hd * plddt_val,                    # Hydrophobicity × confidence
-        sd * plddt_val,                    # Size × confidence
-        burial * plddt_val,                # Burial × confidence
-        contact_d * hd,                    # Contact density × hydrophobicity
-        (1.0 - dist_active) * hd,          # Active site proximity × hydrophobicity
+    features.extend([
+        abs(dH) * burial, abs(dV) * burial, abs(dC) * burial,
+        abs(dH) * abs(dV), abs(dC) * abs(dH),
+        to_proline * burial, burial * h, burial * s, abs(dH) * h,
     ])
 
-    # ── ESM-2 features (20) ──
-    if uniprot_id:
-        esm_feats = _get_esm_features(uniprot_id, position)
-    else:
-        esm_feats = [0.0] * 20
-    f.extend(esm_feats)
+    # Additional (6)
+    aromatic_wt = 1.0 if wt_aa in ('F', 'W', 'Y', 'H') else 0.0
+    aromatic_mut = 1.0 if mut_aa in ('F', 'W', 'Y', 'H') else 0.0
+    small_aa = {'G', 'A', 'S', 'T', 'C'}
+    large_aa = {'F', 'W', 'Y', 'R', 'K', 'H'}
+    small_to_large = 1.0 if wt_aa in small_aa and mut_aa in large_aa else 0.0
+    large_to_small = 1.0 if wt_aa in large_aa and mut_aa in small_aa else 0.0
+    cons_wt = BLOSUM62_DIAG.get(wt_aa, 4)
+    cons_mut = BLOSUM62_DIAG.get(mut_aa, 4)
+    features.extend([
+        aromatic_wt - aromatic_mut, small_to_large, large_to_small,
+        cons_wt, cons_mut, cons_wt - cons_mut,
+    ])
 
-    return f  # 78 features total
+    return features  # 42 features
 
+
+# ═══════════════════════════════════════════════════════════
+# Model loading and prediction
+# ═══════════════════════════════════════════════════════════
 
 def train_model(force_retrain: bool = False) -> dict:
-    """Load pre-trained XGBoost model from disk."""
+    """Load pre-trained model from disk."""
     global _classifier, _scaler, _training_metrics
 
     if not force_retrain and os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
@@ -183,76 +260,49 @@ def train_model(force_retrain: bool = False) -> dict:
             _classifier = pickle.load(f)
         with open(SCALER_PATH, "rb") as f:
             _scaler = pickle.load(f)
-        _training_metrics = {
-            "model_type": "GradientBoosting (noise-filtered) + ESM-2",
-            "training_samples": 52275,
-            "positive_samples": 1287,
-            "negative_samples": 50988,
-            "cv_accuracy_mean": 0.9987,
-            "cv_accuracy_std": 0.0004,
-            "n_features": 76,
-            "data_source": "FireProtDB + Extremophile + Biophysics Synthetic 50K+ + ESM-2 (noise-filtered)",
-            "loaded_from_cache": True,
-        }
+
+        # Load metrics from meta file
+        if os.path.exists(META_PATH):
+            with open(META_PATH) as f:
+                _training_metrics = json.load(f)
+            _training_metrics["loaded_from_cache"] = True
+        else:
+            _training_metrics = {
+                "model_type": "GradientBoosting (publication-ready)",
+                "loaded_from_cache": True,
+            }
         return _training_metrics
 
     raise FileNotFoundError(
         f"Pre-trained model not found at {MODEL_PATH}. "
-        "Run train_with_esm.py first."
+        "Run train_publication_model.py first."
     )
 
 
-def _calibrate_probability(raw_prob: float) -> float:
-    """Apply temperature scaling to calibrate overconfident predictions.
-
-    GradientBoosting trained on mixed real+synthetic data produces
-    overconfident probabilities (e.g. 0.999). Temperature scaling
-    pushes them toward realistic ranges (0.6-0.95) while preserving
-    rank ordering.
-    """
-    import math
-    # The model is overconfident due to synthetic training data.
-    # Use aggressive temperature scaling to produce realistic spread.
-    # Target range: ~60-92% for confident predictions, ~50-60% for uncertain.
-    T = 12.0
-    eps = 1e-7
-    p = max(eps, min(1 - eps, raw_prob))
-    logit = math.log(p / (1 - p))
-    scaled = logit / T
-    softened = 1.0 / (1.0 + math.exp(-scaled))
-    # Stretch into [0.10, 0.92] range
-    calibrated = 0.10 + softened * 0.82
-    return round(calibrated, 4)
-
-
 def predict_mutation(wt_aa: str, position: int, mut_aa: str,
-                     uniprot_id: str = None) -> dict:
-    """Predict whether a mutation is beneficial using the trained classifier."""
+                     sequence: str = None, **kwargs) -> dict:
+    """Predict whether a mutation is stabilizing using the trained classifier."""
     global _classifier, _scaler
 
     if _classifier is None:
         train_model()
 
-    features = np.array([_extract_features(wt_aa, position, mut_aa,
-                                            uniprot_id=uniprot_id)])
+    features = np.array([_extract_features(wt_aa, position, mut_aa, sequence=sequence)])
     features_scaled = _scaler.transform(features)
 
     prediction = _classifier.predict(features_scaled)[0]
     probabilities = _classifier.predict_proba(features_scaled)[0]
 
-    # Calibrate probabilities to realistic confidence ranges
-    raw_beneficial = float(probabilities[1]) if len(probabilities) > 1 else float(probabilities[0])
-    calibrated = _calibrate_probability(raw_beneficial)
+    prob_beneficial = float(probabilities[1]) if len(probabilities) > 1 else float(probabilities[0])
 
     return {
         "predicted_beneficial": bool(prediction),
-        "confidence": round(float(max(_calibrate_probability(probabilities[0]),
-                                       _calibrate_probability(probabilities[1]))), 4),
-        "probability_beneficial": round(calibrated, 4),
+        "confidence": round(float(max(probabilities)), 4),
+        "probability_beneficial": round(prob_beneficial, 4),
     }
 
 
-def predict_candidate_mutations(mutations: list[str]) -> dict:
+def predict_candidate_mutations(mutations: list[str], sequence: str = None) -> dict:
     """Predict all mutations in a candidate and return aggregate assessment."""
     if _classifier is None:
         train_model()
@@ -263,7 +313,7 @@ def predict_candidate_mutations(mutations: list[str]) -> dict:
         mut_aa = mut_str[-1]
         position = int(mut_str[1:-1])
 
-        pred = predict_mutation(wt_aa, position, mut_aa)
+        pred = predict_mutation(wt_aa, position, mut_aa, sequence=sequence)
         pred["mutation"] = mut_str
         predictions.append(pred)
 
