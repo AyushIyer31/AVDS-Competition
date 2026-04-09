@@ -283,14 +283,21 @@ def train_model(force_retrain: bool = False) -> dict:
     global _ensemble, _scaler, _training_metrics, _conservation_cache
 
     if not force_retrain and os.path.exists(REGRESSOR_PATH) and os.path.exists(SCALER_PATH):
+        import sys
+        print(f"[trained_classifier] Loading ensemble from {REGRESSOR_PATH}...", file=sys.stderr)
         with open(REGRESSOR_PATH, "rb") as f:
             _ensemble = pickle.load(f)
         with open(SCALER_PATH, "rb") as f:
             _scaler = pickle.load(f)
         # Load conservation cache if available
         if os.path.exists(CONSERVATION_PATH):
-            with open(CONSERVATION_PATH, "rb") as f:
-                _conservation_cache = pickle.load(f)
+            try:
+                with open(CONSERVATION_PATH, "rb") as f:
+                    _conservation_cache = pickle.load(f)
+                print(f"[trained_classifier] Conservation cache loaded ({len(_conservation_cache)} entries)", file=sys.stderr)
+            except Exception as e:
+                print(f"[trained_classifier] WARNING: Could not load conservation cache: {e}", file=sys.stderr)
+                _conservation_cache = None
 
         if os.path.exists(META_PATH):
             with open(META_PATH) as f:
@@ -301,6 +308,7 @@ def train_model(force_retrain: bool = False) -> dict:
                 "model_type": "Ensemble (GradientBoosting + XGBoost + RandomForest)",
                 "loaded_from_cache": True,
             }
+        print(f"[trained_classifier] Model loaded successfully", file=sys.stderr)
         return _training_metrics
 
     raise FileNotFoundError(
