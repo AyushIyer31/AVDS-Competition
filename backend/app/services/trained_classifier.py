@@ -24,10 +24,12 @@ MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "trained_models")
 REGRESSOR_PATH = os.path.join(MODEL_DIR, "mutation_regressor.pkl")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 META_PATH = os.path.join(MODEL_DIR, "model_meta.json")
+CONSERVATION_PATH = os.path.join(MODEL_DIR, "conservation_cache.pkl")
 
 _ensemble = None  # dict with 'models' list and 'weights'
 _scaler = None
 _training_metrics = None
+_conservation_cache = None
 
 # ═══════════════════════════════════════════════════════════
 # Amino acid property tables
@@ -147,11 +149,40 @@ def _estimate_secondary_structure(sequence, position):
     return h_score / total, s_score / total, 1.0 / total
 
 
+PSSM_AA_ORDER = list("ARNDCQEGHILKMFPSTWYV")
+
+def _get_conservation_features(protein_id, position, wt_aa, mut_aa):
+    """Extract 6 PSSM conservation features."""
+    if not _conservation_cache or not protein_id:
+        return [0.0] * 6
+    pssm_data = _conservation_cache.get(protein_id)
+    if pssm_data is None:
+        return [0.0] * 6
+    pssm = pssm_data['pssm']
+    info = pssm_data['info_content']
+    idx = position - 1
+    if idx < 0 or idx >= len(pssm):
+        return [0.0] * 6
+    aa_to_idx = {aa: i for i, aa in enumerate(PSSM_AA_ORDER)}
+    wt_idx = aa_to_idx.get(wt_aa)
+    mut_idx = aa_to_idx.get(mut_aa)
+    if wt_idx is None or mut_idx is None:
+        return [0.0] * 6
+    row = pssm[idx]
+    pssm_wt = float(row[wt_idx])
+    pssm_mut = float(row[mut_idx])
+    delta_pssm = pssm_mut - pssm_wt
+    info_at_pos = float(info[idx]) if idx < len(info) else 0.0
+    rank = float(np.sum(info <= info_at_pos) / max(len(info), 1)) if len(info) > 1 else 0.5
+    wt_rank = float(np.sum(row <= pssm_wt) / 20.0)
+    return [pssm_wt, pssm_mut, delta_pssm, info_at_pos, rank, wt_rank]
+
+
 def _extract_features(wt_aa: str, position: int, mut_aa: str,
-                      sequence: str = None, **kwargs) -> list[float]:
-    """Extract 42 features for a single mutation (publication v4)."""
+                      sequence: str = None, protein_id: str = None, **kwargs) -> list[float]:
+    """Extract 48 features for a single mutation (42 original + 6 conservation)."""
     if wt_aa not in AA_SET or mut_aa not in AA_SET:
-        return [0.0] * 42
+        return [0.0] * 48
 
     features = []
 
@@ -236,7 +267,11 @@ def _extract_features(wt_aa: str, position: int, mut_aa: str,
         cons_wt, cons_mut, cons_wt - cons_mut,
     ])
 
-    return features  # 42 features
+    # PSSM conservation features (6)
+    cons_feats = _get_conservation_features(protein_id, position, wt_aa, mut_aa)
+    features.extend(cons_feats)
+
+    return features  # 48 features
 
 
 # ═══════════════════════════════════════════════════════════
@@ -245,13 +280,17 @@ def _extract_features(wt_aa: str, position: int, mut_aa: str,
 
 def train_model(force_retrain: bool = False) -> dict:
     """Load pre-trained ensemble from disk."""
-    global _ensemble, _scaler, _training_metrics
+    global _ensemble, _scaler, _training_metrics, _conservation_cache
 
     if not force_retrain and os.path.exists(REGRESSOR_PATH) and os.path.exists(SCALER_PATH):
         with open(REGRESSOR_PATH, "rb") as f:
             _ensemble = pickle.load(f)
         with open(SCALER_PATH, "rb") as f:
             _scaler = pickle.load(f)
+        # Load conservation cache if available
+        if os.path.exists(CONSERVATION_PATH):
+            with open(CONSERVATION_PATH, "rb") as f:
+                _conservation_cache = pickle.load(f)
 
         if os.path.exists(META_PATH):
             with open(META_PATH) as f:
@@ -281,14 +320,15 @@ def _ensemble_predict(features_scaled):
 
 
 def predict_mutation(wt_aa: str, position: int, mut_aa: str,
-                     sequence: str = None, **kwargs) -> dict:
+                     sequence: str = None, protein_id: str = None, **kwargs) -> dict:
     """Predict DDG for a mutation using ensemble and derive stability classification."""
     global _ensemble, _scaler
 
     if _ensemble is None:
         train_model()
 
-    features = np.array([_extract_features(wt_aa, position, mut_aa, sequence=sequence)])
+    features = np.array([_extract_features(wt_aa, position, mut_aa,
+                                           sequence=sequence, protein_id=protein_id)])
     features_scaled = _scaler.transform(features)
 
     predicted_ddg = float(_ensemble_predict(features_scaled)[0])

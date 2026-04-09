@@ -47,6 +47,7 @@ FIREPROT_PATH = os.path.join(BASE_DIR, "fireprotdb_data/fireprot_upload/csvs/4_f
 PRODDG_PATH = os.path.join(BASE_DIR, "proddg_s2648.csv")
 S669_PATH = os.path.join(BASE_DIR, "s669_full.tsv")
 THERMOMUTDB_PATH = os.path.join(BASE_DIR, "thermomutdb.json")
+CONSERVATION_CACHE_PATH = os.path.join(BASE_DIR, "conservation_cache.pkl")
 MODEL_DIR = os.path.join(BASE_DIR, "backend/app/trained_models")
 
 # ═══════════════════════════════════════════════════════════
@@ -144,6 +145,55 @@ def get_blosum62(wt, mut):
 
 
 # ═══════════════════════════════════════════════════════════
+# Conservation (PSSM) features
+# ═══════════════════════════════════════════════════════════
+PSSM_AA_ORDER = list("ARNDCQEGHILKMFPSTWYV")
+_conservation_cache = None
+
+def load_conservation_cache():
+    global _conservation_cache
+    if os.path.exists(CONSERVATION_CACHE_PATH):
+        with open(CONSERVATION_CACHE_PATH, 'rb') as f:
+            _conservation_cache = pickle.load(f)
+        print(f"  Loaded conservation cache: {len(_conservation_cache)} entries")
+    else:
+        _conservation_cache = {}
+        print("  WARNING: No conservation cache found. Run generate_pssm_conservation.py first.")
+
+def get_conservation_features(protein_id, position, wt_aa, mut_aa):
+    """Extract 6 PSSM-based conservation features for a mutation."""
+    if _conservation_cache is None:
+        return [0.0] * 6
+
+    pssm_data = _conservation_cache.get(protein_id)
+    if pssm_data is None:
+        return [0.0] * 6
+
+    pssm = pssm_data['pssm']
+    info = pssm_data['info_content']
+
+    idx = position - 1
+    if idx < 0 or idx >= len(pssm):
+        return [0.0] * 6
+
+    aa_to_idx = {aa: i for i, aa in enumerate(PSSM_AA_ORDER)}
+    wt_idx = aa_to_idx.get(wt_aa)
+    mut_idx = aa_to_idx.get(mut_aa)
+    if wt_idx is None or mut_idx is None:
+        return [0.0] * 6
+
+    row = pssm[idx]
+    pssm_wt = float(row[wt_idx])
+    pssm_mut = float(row[mut_idx])
+    delta_pssm = pssm_mut - pssm_wt
+    info_at_pos = float(info[idx]) if idx < len(info) else 0.0
+    rank = float(np.sum(info <= info_at_pos) / max(len(info), 1)) if len(info) > 1 else 0.5
+    wt_rank = float(np.sum(row <= pssm_wt) / 20.0)
+
+    return [pssm_wt, pssm_mut, delta_pssm, info_at_pos, rank, wt_rank]
+
+
+# ═══════════════════════════════════════════════════════════
 # Feature extraction
 # ═══════════════════════════════════════════════════════════
 
@@ -182,10 +232,10 @@ def estimate_secondary_structure(sequence, position):
     return h_score / total, s_score / total, 1.0 / total
 
 
-def extract_features(wt_aa, position, mut_aa, sequence=None):
+def extract_features(wt_aa, position, mut_aa, sequence=None, protein_id=None):
     """Extract feature vector for a single mutation.
 
-    Features (42 total):
+    Features (48 total = 42 original + 6 conservation):
       - 6 physicochemical deltas (hydrophobicity, volume, charge, flexibility, helix, sheet)
       - 6 absolute values for WT and MUT
       - 1 BLOSUM62 substitution score
@@ -304,7 +354,11 @@ def extract_features(wt_aa, position, mut_aa, sequence=None):
         cons_wt - cons_mut,
     ])
 
-    return features  # 42 features total
+    # ── PSSM conservation features (6) ──
+    cons_feats = get_conservation_features(protein_id, position, wt_aa, mut_aa)
+    features.extend(cons_feats)
+
+    return features  # 48 features total
 
 
 # ═══════════════════════════════════════════════════════════
@@ -480,6 +534,10 @@ def main():
     print(f"  Removed {removed_overlap} mutations overlapping with S669 test set")
     print(f"  Final training set: {len(train_records)} mutations")
 
+    # ── Step 2.5: Load conservation cache ──
+    print("\nLoading PSSM conservation cache...")
+    load_conservation_cache()
+
     # ── Step 3: Extract features ──
     print("\nSTEP 3: Extracting features")
     print("-" * 40)
@@ -487,20 +545,24 @@ def main():
     def records_to_arrays(records):
         X, y_ddg, y_binary, proteins, sources = [], [], [], [], []
         skipped = 0
+        has_pssm = 0
         for r in records:
-            feats = extract_features(r['wt_aa'], r['position'], r['mut_aa'], r['sequence'])
+            feats = extract_features(r['wt_aa'], r['position'], r['mut_aa'],
+                                     r['sequence'], protein_id=r['protein_id'])
             if feats is None:
                 skipped += 1
                 continue
             X.append(feats)
             y_ddg.append(r['ddg'])
-            # Convention: DDG > 0 = destabilizing, DDG < 0 = stabilizing
-            # We predict "stabilizing" = beneficial = 1
             y_binary.append(1 if r['ddg'] < 0 else 0)
             proteins.append(r['protein_id'])
             sources.append(r['source'])
+            # Track PSSM coverage
+            if _conservation_cache and r['protein_id'] in _conservation_cache:
+                has_pssm += 1
         if skipped:
             print(f"  Skipped {skipped} mutations (invalid amino acids)")
+        print(f"  PSSM coverage: {has_pssm}/{len(X)} mutations ({100*has_pssm/max(len(X),1):.1f}%)")
         return np.array(X), np.array(y_ddg), np.array(y_binary), proteins, sources
 
     X_train, y_train_ddg, y_train, train_proteins, train_sources = records_to_arrays(train_records)
@@ -710,7 +772,8 @@ def main():
         'dH×burial', 'dV×burial', 'dC×burial', 'dH×dV', 'dC×dH',
         'Pro×burial', 'burial×helix', 'burial×sheet', 'dH×helix',
         'aromatic_change', 'small→large', 'large→small',
-        'cons_wt', 'cons_mut', 'cons_delta',
+        'cons_wt_blosum', 'cons_mut_blosum', 'cons_delta_blosum',
+        'PSSM_wt', 'PSSM_mut', 'delta_PSSM', 'info_content', 'cons_rank', 'wt_rank',
     ]
     avg_imp = np.mean([m.feature_importances_ for _, m in models], axis=0)
     idx_sorted = np.argsort(avg_imp)[::-1]
@@ -732,13 +795,18 @@ def main():
         pickle.dump(ensemble, f)
     with open(os.path.join(MODEL_DIR, "scaler.pkl"), "wb") as f:
         pickle.dump(scaler, f)
+    # Save conservation cache for deployment
+    if _conservation_cache:
+        with open(os.path.join(MODEL_DIR, "conservation_cache.pkl"), "wb") as f:
+            pickle.dump(_conservation_cache, f)
+        print(f"  Saved conservation_cache.pkl ({len(_conservation_cache)} proteins)")
 
     meta = {
         "model_type": "Ensemble (GradientBoosting + XGBoost + RandomForest)",
         "prediction_target": "DDG (kcal/mol)",
         "n_models": 3,
         "n_features": int(X_train.shape[1]),
-        "feature_version": "v5_ensemble_regression",
+        "feature_version": "v6_ensemble_conservation",
         "training_samples": int(X_train.shape[0]),
         "stabilizing_samples": int(n_pos),
         "destabilizing_samples": int(n_neg),
